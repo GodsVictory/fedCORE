@@ -1,0 +1,826 @@
+#@data/values-schema
+---
+#! Cluster Configuration Schema
+#! This defines all valid data values for cluster configurations.
+#! ytt will validate cluster configs against this schema.
+
+#! =============================================================================
+#! Physical Facts (Required)
+#! =============================================================================
+#! Unique identifier for this cluster
+#! Used in resource naming, labels, and IAM policies
+cluster_name: ""
+
+#! Cloud provider type: aws, azure, onprem
+#! Affects: Component selection (ACK vs ASO), networking, storage classes
+cloud: ""
+
+#! Cloud region (aws/azure) or datacenter identifier (onprem)
+#! For AWS: us-east-1, us-west-2, etc.
+#! For Azure: eastus, westus2, etc.
+#! For on-prem: not used (use datacenter field instead)
+region: ""
+
+#! Environment: prod, dev, staging
+#! Affects: Security policies, resource quotas, backup retention, monitoring verbosity
+environment: ""
+
+#! Overlay IDs: list of overlay directory names to apply from each component's overlays/ dir
+#! Controls which component overlays are selected during build (e.g., ["aws", "prod"])
+#! Each ID maps to {component}/overlays/{id}/ — order matters (applied in sequence)
+#! Typically set to [cloud, environment] in cluster.yaml (no automatic default)
+overlays:
+  - ""
+
+#! Base domain for ingress resources
+#! Example: ingress.example.com
+#! Used by ingress-nginx and application ingresses
+ingress_domain: ""
+
+#! OCI Repository base URL for component artifacts
+#! Example: nexus.example.com/fedcore
+#! Used by Flux to fetch component OCI artifacts
+#! Full URL format: oci://{oci_registry}/{oci_repository_base}/{component-name}-{cluster_name}
+oci_registry: "registry.example.com"
+oci_repository_base: "fedcore"
+
+#! =============================================================================
+#! Cloud-Specific Configuration (Optional)
+#! =============================================================================
+#@schema/nullable
+aws:
+  #! AWS Account ID (12-digit number)
+  #! Required for: Pod Identity (EKS), IAM role assumption, tenant permission boundaries
+  #! The platform auto-creates: {cluster_name}-TenantMaxPermissions IAM policy
+  account_id: ""
+
+#@schema/nullable
+azure:
+  #! Azure Subscription ID (GUID)
+  #! Required for: Workload Identity, resource provisioning via ASO
+  subscription_id: ""
+
+  #! Resource group containing the AKS cluster
+  #! Required for: AKS authentication, network policy configuration
+  resource_group: ""
+
+  #! Azure AD Tenant ID (GUID)
+  #! Required for: Workload Identity federation, tenant isolation
+  tenant_id: ""
+
+  #! AKS OIDC issuer URL
+  #! Required for: Workload Identity token validation
+  #! Example: https://eastus.oic.prod-aks.azure.com/{tenant_id}/{cluster_id}/
+  oidc_issuer: ""
+
+  #! Azure region (e.g., eastus, westus2)
+  #! Used by: ASO resource provisioning, availability zone selection
+  region: ""
+
+#@schema/nullable
+#! Physical datacenter location for on-prem clusters
+#! Examples: tcc, mcc, or any datacenter identifier
+#! Used in: Labels, monitoring tags, disaster recovery planning
+datacenter: ""
+
+#! =============================================================================
+#! Backup Configuration
+#! =============================================================================
+backup:
+  #! Backup retention period in days
+  #! Used by: Velero backups (if Velero component is enabled)
+  #! Examples: 7 (dev), 30 (prod), 90 (compliance)
+  retention_days: 7
+
+  #! Backup schedule in cron format
+  #! Used by: Velero scheduled backups (if Velero component is enabled)
+  #! Examples: "0 2 * * *" (daily 2 AM), "0 */6 * * *" (every 6h)
+  schedule: "0 2 * * *"
+
+#! =============================================================================
+#! AppDynamics Configuration
+#! =============================================================================
+appdynamics:
+  #@schema/type any=True
+  #! AppDynamics controller IP ranges for network policy egress
+  #! These IPs are allowed for observability traffic even when internet egress is restricted
+  #! Required for: Network policies in tenant namespaces (always-allow AppDynamics access)
+  #! Format: Array of CIDR blocks (e.g., ["34.192.0.0/16", "52.20.0.0/16"])
+  #! To find your AppDynamics SaaS IP ranges:
+  #!   1. Contact AppDynamics support or check SaaS documentation
+  #!   2. Run: nslookup your-tenant.saas.appdynamics.com
+  #!   3. Use IP ranges provided by AppDynamics for your region
+  #! Cloud-specific examples:
+  #!   AWS US-East: ["34.192.0.0/16", "52.20.0.0/16"]
+  #!   AWS GovCloud: ["52.61.0.0/16"]
+  #!   Azure: Contact AppDynamics for Azure-specific ranges
+  #! For on-premises controller: Use your internal controller subnet CIDR
+  #! Empty array means no AppDynamics traffic allowed (will break observability)
+  #! Default: [] (empty - must be configured per cluster)
+  ip_ranges: []
+
+#! =============================================================================
+#! Network Configuration
+#! =============================================================================
+network:
+  #@schema/type any=True
+  #! Private network CIDR ranges to exclude from internet egress
+  #! Used by: Internet egress NetworkPolicy (excludes these ranges from 0.0.0.0/0)
+  #! Purpose: Prevent tenant pods from routing private traffic through internet gateway
+  #! Standard RFC1918 private networks:
+  #!   - 10.0.0.0/8: Class A private (large enterprises, AWS VPCs)
+  #!   - 172.16.0.0/12: Class B private (medium networks)
+  #!   - 192.168.0.0/16: Class C private (small networks, home)
+  #! Cloud-specific considerations:
+  #!   AWS: Default VPC is 172.31.0.0/16, custom VPCs often use 10.0.0.0/8
+  #!   Azure: Default VNet is 10.0.0.0/16, but can be any private range
+  #!   On-prem: May include additional private ranges (e.g., 100.64.0.0/10 for CGNAT)
+  #! You may need to add cloud-specific ranges:
+  #!   AWS Link-Local: 169.254.0.0/16 (for metadata service, Pod Identity)
+  #!   Azure Link-Local: 168.63.129.16/32 (Azure metadata)
+  #! Default: Standard RFC1918 ranges (sufficient for most deployments)
+  private_cidrs:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+
+#! =============================================================================
+#! Monitoring & Observability
+#! =============================================================================
+monitoring:
+  #! Enable Prometheus metrics collection for ALL platform components
+  #! Components affected: Capsule, Kyverno, Istio, ingress-nginx, Tetragon, Velero, Splunk
+  #! Creates ServiceMonitor resources that tell Prometheus what to scrape
+  #! When enabled: Each component exports metrics (CPU, memory, request rates, errors)
+  #! When disabled: No metrics collected, monitoring dashboards will be empty
+  #! Recommended: true (always, even in dev for observability)
+  enabled: true
+
+#! =============================================================================
+#! Istio Gateway Configuration
+#! =============================================================================
+#! Istio Gateway configuration for VirtualService routing
+#! Can reference either a platform-managed gateway (istio-ingressgateway component)
+#! or a pre-installed gateway on the cluster. Omit this section if not using Istio.
+#@schema/nullable
+istio_gateway:
+  #! Gateway selector name (matches istio label on gateway pods)
+  #! For platform-managed: Helm release name
+  #! For pre-installed: name of the existing gateway deployment
+  #! Default: "istio-ingressgateway" (standard Istio)
+  name: "istio-ingressgateway"
+
+  #! Namespace where the Gateway resource exists
+  #! Default: "istio-system" (standard Istio)
+  namespace: "istio-system"
+
+  #! Gateway resource name (referenced by VirtualServices as namespace/gateway_name)
+  #! Default: "main-gateway"
+  gateway_name: "main-gateway"
+
+  #! Number of gateway pod replicas (only for platform-managed gateways)
+  #! Ignored for pre-installed gateways. Default: 2
+  replica_count: 2
+
+  #! Pod resource requests and limits (only for platform-managed gateways)
+  #! Ignored for pre-installed gateways.
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "2000m"
+      memory: "1Gi"
+
+  #! Horizontal Pod Autoscaling configuration (only for platform-managed gateways)
+  #! Ignored for pre-installed gateways.
+  autoscaling:
+    enabled: true
+    min_replicas: 2
+    max_replicas: 5
+    target_cpu_utilization: 80
+
+  #! Service type (only for platform-managed gateways)
+  #! LoadBalancer (cloud), ClusterIP (with TargetGroupBinding)
+  #! Ignored for pre-installed gateways. Default: "LoadBalancer"
+  service_type: "LoadBalancer"
+
+  #! Service ports configuration (only for platform-managed gateways)
+  #! Ignored for pre-installed gateways.
+  #@schema/type any=True
+  service_ports:
+    - name: "status-port"
+      port: 15021
+      target_port: 15021
+      protocol: "TCP"
+    - name: "http2"
+      port: 80
+      target_port: 80
+      protocol: "TCP"
+    - name: "https"
+      port: 443
+      target_port: 443
+      protocol: "TCP"
+
+  #@schema/nullable
+  #@schema/type any=True
+  #! Service annotations (only for platform-managed gateways)
+  #! Cloud-specific load balancer configuration. Ignored for pre-installed gateways.
+  #! AWS: aws-load-balancer-* annotations
+  #! Azure: service.beta.kubernetes.io/azure-* annotations
+  service_annotations: {}
+
+  #! TLS certificate secret name for HTTPS Gateway
+  #! This Kubernetes TLS secret must exist in the gateway namespace
+  #! Create with: kubectl create secret tls <name> --cert=cert.pem --key=key.pem -n <namespace>
+  #! Default: "wildcard-tls-cert"
+  tls_credential_name: "wildcard-tls-cert"
+
+  #! TLS mode for HTTPS traffic
+  #! SIMPLE: Standard TLS termination (one-way TLS)
+  #! MUTUAL: mTLS requiring client certificates
+  #! PASSTHROUGH: TLS passthrough (no termination at gateway)
+  #! ISTIO_MUTUAL: Use Istio's mTLS certificates
+  #! Default: "SIMPLE"
+  tls_mode: "SIMPLE"
+
+#! =============================================================================
+#! Tenant Policies (Multi-Tenancy with Capsule + Kyverno)
+#! =============================================================================
+tenant_policies:
+  #! ==========================================================================
+  #! Image Security
+  #! ==========================================================================
+
+  #! Enforce container image registry allowlist via Kyverno policy
+  #! Applies to: ALL tenant Pods (Deployments, StatefulSets, DaemonSets, Jobs, CronJobs)
+  #! When enabled, Kyverno blocks Pod creation if image is NOT from allowed_registries list
+  #! Example: enforce=true, allowed=["nexus.internal.com/"] → "docker.io/nginx" is BLOCKED
+  #! Use case: Prevent pulling from public registries (supply chain security, compliance)
+  #! Recommended: false (dev, need public images), true (prod, only internal registry)
+  enforce_image_registry: false
+
+  #! Allowed container registry prefixes (checked by Kyverno when enforce_image_registry=true)
+  #! Matching: Prefix-based (trailing slash important!)
+  #! Examples:
+  #!   - "nexus.example.com/tenant-" allows nexus.example.com/tenant-foo/app:v1
+  #!   - "docker.io/" allows docker.io/library/nginx (but NOT ghcr.io)
+  #!   - "gcr.io/myproject/" allows only images from specific GCP project
+  #! Multiple registries allowed (e.g., internal + approved public)
+  allowed_registries:
+    - "docker.io/"
+
+  #! Block container images with :latest tag or no tag via Kyverno policy
+  #! Applies to: ALL tenant Pods
+  #! When enabled, Kyverno blocks: nginx:latest, nginx (implicit :latest), myapp:latest
+  #! Still allows: nginx:1.25, myapp:v2.1.0, nginx:sha256-abc123...
+  #! Use case: Enforce immutable deployments (latest tag changes, breaks rollbacks)
+  #! Recommended: false (dev, rapid iteration), true (prod, reproducible builds)
+  disallow_latest_tag: false
+
+  #! Require container image signatures (Sigstore Cosign) via Kyverno policy
+  #! Applies to: ALL tenant Pods
+  #! When enabled, Kyverno:
+  #!   1. Extracts image digest from Pod spec
+  #!   2. Verifies image signature using image_signing_public_key
+  #!   3. Blocks Pod if signature invalid/missing
+  #! Requires: Images signed with cosign (cosign sign my-image)
+  #! Use case: Ensure images built by trusted CI/CD only (prevent malicious images)
+  #! Recommended: false (unless you have signing infrastructure), true (high-security prod)
+  require_image_signatures: false
+
+  #! ==========================================================================
+  #! Resource Management
+  #! ==========================================================================
+
+  #! Require CPU/memory limits on ALL tenant pod containers via Kyverno policy
+  #! Applies to: Every container in tenant Pods (Deployments, StatefulSets, etc.)
+  #! When enabled, Kyverno blocks Pods missing resources.limits.cpu or resources.limits.memory
+  #! Example BLOCKED pod:
+  #!   containers:
+  #!   - name: app
+  #!     # No resources: section → BLOCKED
+  #! Example ALLOWED pod:
+  #!   containers:
+  #!   - name: app
+  #!     resources:
+  #!       limits: {cpu: "1", memory: "1Gi"}  # Has limits → ALLOWED
+  #! Use case: Prevent resource exhaustion (one tenant consuming all cluster CPU/memory)
+  #! Recommended: false (dev, simpler debugging), true (prod, enforce resource discipline)
+  require_resource_limits: false
+
+  #! Default ResourceQuota for tenant namespaces (enforced by Capsule)
+  #! Applies to: Each tenant namespace (cumulative across all pods in namespace)
+  #! Limits total CPU that can be REQUESTED (not used) in the namespace
+  #! Example: "10" means sum of all pod cpu requests ≤ 10 cores
+  #!   - Pod 1 requests 2 CPU, Pod 2 requests 3 CPU = 5 CPU used
+  #!   - Can still create 5 more CPU worth of pods (total 10)
+  #!   - 11th CPU worth of pods → BLOCKED by ResourceQuota
+  #! Prevents: Single tenant consuming entire cluster
+  #! Examples: "10" (dev/test), "50" (prod), "100" (large tenant)
+  default_namespace_cpu_quota: "10"
+
+  #! Default ResourceQuota for tenant namespace memory
+  #! Applies to: Each tenant namespace (cumulative memory requests)
+  #! Example: "20Gi" means sum of all pod memory requests ≤ 20Gi
+  #! If tenant tries to create pods requesting >20Gi total → BLOCKED
+  #! Examples: "20Gi" (dev/test), "100Gi" (prod), "500Gi" (data-heavy tenant)
+  default_namespace_memory_quota: "20Gi"
+
+  #! ==========================================================================
+  #! Network Security
+  #! ==========================================================================
+
+  #! Allow tenant pods to make outbound connections to the internet
+  #! Requires: security.network_policies_enabled: true (otherwise this setting has no effect)
+  #! When true: Capsule creates NetworkPolicy allowing egress to 0.0.0.0/0
+  #!   - Tenant pods can: curl google.com, pull from docker.io, access SaaS APIs
+  #!   - Still allows: Pod-to-pod within namespace, pod-to-service in same namespace
+  #! When false: Capsule creates NetworkPolicy blocking internet egress
+  #!   - Tenant pods BLOCKED: curl google.com (timeout), pull from public registries
+  #!   - Still allows: Internal cluster DNS, pod-to-pod, in-cluster services only
+  #! Use case: Restrict tenants to internal-only traffic (data exfiltration prevention)
+  #! Recommended: true (most cases), false (high-security tenants, air-gapped workloads)
+  allow_internet_egress: true
+
+  #! ==========================================================================
+  #! Runtime Security
+  #! ==========================================================================
+
+  #! Require seccomp security profiles on ALL tenant pods via Kyverno policy
+  #! Applies to: Every pod in tenant namespaces
+  #! Seccomp (Secure Computing Mode) restricts which Linux syscalls containers can make
+  #! When enabled, Kyverno blocks pods missing securityContext.seccompProfile
+  #! Example BLOCKED pod:
+  #!   spec:
+  #!     containers:
+  #!     - name: app
+  #!       # No seccompProfile → BLOCKED
+  #! Example ALLOWED pod:
+  #!   spec:
+  #!     securityContext:
+  #!       seccompProfile: {type: RuntimeDefault}  # Has profile → ALLOWED
+  #! RuntimeDefault profile blocks ~44 dangerous syscalls (kernel keyring, bpf, ptrace, etc.)
+  #! Use case: Reduce container breakout risk (blocks syscalls used in exploits)
+  #! Recommended: false (dev, can break some apps), true (prod, defense-in-depth)
+  require_seccomp: false
+
+  #! ==========================================================================
+  #! Image Signing (Optional)
+  #! ==========================================================================
+  #@schema/nullable
+  #! Cosign/Notary public key for image signature verification
+  #! PEM-encoded public key
+  #! Only required if require_image_signatures: true
+  image_signing_public_key: ""
+
+#! =============================================================================
+#! Helm Repository Configuration (OCI Registry)
+#! =============================================================================
+#! All Helm charts are served from an OCI registry for air-gapped deployments
+helm_repositories:
+  #! Use mirrored Helm charts from OCI registry
+  #! When true: Pull all charts from oci_registry_url
+  #! When false: Pull directly from upstream (requires internet access)
+  #! Recommended: true (for air-gapped, compliance, availability)
+  use_mirror: true
+
+  #! OCI registry URL for mirrored Helm charts
+  #! Must include oci:// prefix
+  #! Charts stored as: {oci_registry_url}/{chart_name}:{version}
+  #! Example: oci://nexus.example.com/helm-charts/kyverno:3.0.0
+  oci_registry_url: "oci://registry.example.com/fedcore/helm-charts"
+
+#! =============================================================================
+#! Flux Installation Configuration
+#! =============================================================================
+#! Flux controller installation
+flux:
+  #! Install Flux controllers on this cluster
+  #! When true: Installs Flux controllers (source-controller, kustomize-controller, etc.)
+  #!   - Full cluster ownership: this cluster manages its own GitOps deployment
+  #! When false: Skip Flux installation (tenant mode)
+  #!   - Use case: Managed cluster where another cluster's Flux manages this cluster
+  #!   - Useful for hub-and-spoke architectures or managed Kubernetes services
+  #! Recommended: true (most clusters), false (when managed by external Flux)
+  install: true
+
+  #! Namespace where Flux controllers are installed
+  #! Only used when flux.install=true
+  #! Recommended: "flux-system" (Flux convention)
+  namespace: "flux-system"
+
+  #! Kubernetes resource kinds to exclude from the Flux install manifest
+  #! Matching documents are stripped from the flux install --export output
+  #! before applying to the cluster. Useful for namespace-scoped Flux where
+  #! you lack permissions for certain resource types.
+  #! For namespace-scoped clusters (used with --admin-prep), set to:
+  #!   - Namespace
+  #!   - CustomResourceDefinition
+  #!   - ClusterRole
+  #!   - ClusterRoleBinding
+  #!   - ServiceAccount
+  #!   - Role
+  #!   - RoleBinding
+  #!   - NetworkPolicy
+  #!   - ResourceQuota
+  exclude_kinds:
+    - ""
+
+
+#! =============================================================================
+#! Component Sources Configuration
+#! =============================================================================
+#! Component OCIRepository and Kustomization resources
+#! Namespace where component OCIRepository and Kustomization resources are created
+#! These resources reference platform components (Capsule, Kyverno, Istio, etc.)
+#! Must be a namespace where Flux controllers can find them:
+#!   - If flux.install=true: typically same as flux.namespace
+#!   - If flux.install=false: namespace monitored by external Flux instance
+#! Recommended: "flux-system" (standard), or custom namespace for tenant scenarios
+component_sources_namespace: "flux-system"
+
+#! =============================================================================
+#! Bootstrap Secrets and ConfigMaps
+#! =============================================================================
+#! Image pull secret name for private OCI registries
+#! Secret will be created in component_sources_namespace if dockerconfigjson is provided
+image_pull_secret_name: "image-pull-secret"
+
+#@schema/nullable
+#! Base64-encoded dockerconfigjson for image pull secret
+#! If provided, an image pull secret will be created in component_sources_namespace
+#! Generate with: kubectl create secret docker-registry --dry-run=client -o json | jq -r '.data[".dockerconfigjson"]'
+#! Or: cat ~/.docker/config.json | base64 -w0
+#! Leave empty/null to skip image pull secret creation
+dockerconfigjson: ""
+
+#! CA certificates resource name for internal PKI
+#! If ca_bundle is provided, creates:
+#!   - Secret: {name} - Referenced by OCIRepository.spec.certSecretRef
+#!   - ConfigMap: {name}-configmap - For mounting in Flux controllers via overlay
+ca_certificates_name: "ca-certs"
+
+#! CA certificate bundle for internal PKI (PEM format, can be multi-line)
+#! If provided, both a Secret and ConfigMap will be created in component_sources_namespace
+#! - Secret is used by OCIRepository resources (via spec.certSecretRef)
+#! - ConfigMap can be mounted in Flux controllers for system-wide trust
+#! Leave empty/null to skip CA certificates creation
+ca_bundle: |
+    -----BEGIN CERTIFICATE-----
+    <Replace with your internal CA certificate bundle in PEM format>
+    -----END CERTIFICATE-----
+
+#! =============================================================================
+#! Component Deployments (Unified array for all OCI artifacts)
+#! =============================================================================
+#! List of platform components to deploy on this cluster
+#! Each component is packaged as an OCI artifact (like Docker image but contains Kubernetes YAML)
+#! Flux automatically pulls OCI artifacts from oci_registry_url and applies them to cluster
+#! Common components:
+#!   - kro: Kubernetes Resource Orchestrator (needed for TenantOnboarding CRD)
+#!   - capsule: Multi-tenancy framework (creates Tenant CRs, namespace isolation)
+#!   - kyverno: Policy engine (enforces tenant_policies settings)
+#!   - kyverno-policies: Pre-built policies (image registry, resource limits, seccomp)
+#!   - istio: Service mesh (traffic management, mTLS, observability)
+#!   - ingress-nginx: Ingress controller (HTTP/HTTPS routing)
+#!   - cloud-permissions: Cloud IAM controllers (ACK for AWS, ASO for Azure)
+#!   - tetragon: eBPF security observability (process, network, file access monitoring)
+#!   - headlamp: Kubernetes UI dashboard
+#!   - webapps: Sample applications (optional demos/test apps)
+#!   - tenant: Tenant onboarding manifests (creates TenantOnboarding CRs from tenants/ directory)
+#!   - namespace: Namespace provisioning manifests (creates NamespaceProvisioning CRs from tenants/ directory)
+components:
+- #! Component name (must match OCI artifact name in registry)
+  #! Example: "kyverno" pulls oci://nexus.example.com/helm-charts/kyverno:version
+  #! Artifact path: {oci_registry_url}/{name}:{version}
+  name: ""
+
+  #@schema/nullable
+  #! OCI artifact version tag to deploy
+  #! Example: "1.0.0" pulls oci://nexus.example.com/helm-charts/kyverno:1.0.0
+  #! Version pinning ensures reproducible deployments
+  #! Leave empty to use "latest" tag (not recommended for prod)
+  version: "latest"
+
+  #@schema/nullable
+  #@schema/type any=True
+  #! Components that must be deployed BEFORE this component
+  #! Resolved automatically from metadata.yaml in each component directory
+  #! Can be overridden here or via pre-render overlay for cluster-specific deps
+  depends_on: []
+
+#! =============================================================================
+#! Tenant Instance Namespace Configuration
+#! =============================================================================
+#! Namespace where TenantOnboarding and NamespaceProvisioning CR instances are created
+#! These CRs are managed by Flux and trigger KRO to provision actual resources
+#! Default: "tenant-system"
+tenant_instance_namespace: "tenant-system"
+
+#! Whether to create the tenant instance namespace as part of tenant-instances artifact
+#! When true: tenant-instances artifact includes Namespace creation
+#! When false: assumes namespace already exists (e.g., created by cluster admin)
+#! Use case: Set to false if namespace is pre-created with special RBAC/policies
+#! Default: true
+create_tenant_instance_namespace: true
+
+#! =============================================================================
+#! Tenants (Array of tenant definitions)
+#! =============================================================================
+#! Define application teams/tenants that will run workloads on this cluster
+#! Each tenant gets isolated namespaces via Capsule with resource quotas and RBAC
+#! This is just the schema definition - actual tenant configs go in platform/clusters/{cluster}/tenants/
+tenants:
+- #! Unique tenant identifier (lowercase, alphanumeric, hyphens)
+  #! Capsule creates Tenant CR with this name (if type: tenant)
+  #! Tenant namespaces named: {name}-{suffix} (e.g., acme-dev, acme-prod)
+  #! Also used in: Cloud IAM roles, labels, monitoring dashboards
+  #! Example: "acme", "platform-team", "data-eng"
+  name: ""
+
+  #! Provisioning type
+  #! tenant: Full Capsule tenant with quotas, multiple namespaces, RBAC (TenantOnboarding CR)
+  #! namespace: Simple namespace with ServiceAccount and RBAC (NamespaceProvisioning CR)
+  #! Default: tenant
+  type: "tenant"
+
+  #! Tenant owner users/groups (RBAC subjects with admin permissions)
+  #! Capsule automatically grants owners full access to all tenant namespaces
+  #!
+  #! Basic examples:
+  #!   - {kind: "User", name: "alice@example.com"}
+  #!   - {kind: "Group", name: "platform-admins"}
+  #!
+  #! AWS EKS with access entries (requires AWS overlay):
+  #!   - {kind: "Group", name: "acme-admins", iamRoleName: "user-Admin"}
+  #!   - When iamRoleName is set on a Group owner, creates an EKS AccessEntry
+  #!   - AccessEntry maps: IAM role arn:aws:iam::{aws_account_id}:role/{iamRoleName} → K8s group
+  #!   - AccessEntry name format: {tenant-name}-{iamRoleName}
+  #!
+  #! Owners can:
+  #!   - Create new namespaces within tenant (up to namespace_quota limit)
+  #!   - Create RoleBindings within their namespaces (grant access to team members)
+  #!   - View all resources across all tenant namespaces
+  #! Owners CANNOT:
+  #!   - Create cluster-wide resources (ClusterRoles, CRDs)
+  #!   - Access other tenants' namespaces
+  #!   - Modify tenant quotas
+  owners:
+    #! Subject kind (required)
+    #! - User: Individual user (e.g., "alice@example.com")
+    #! - Group: User group (e.g., "platform-admins", "acme-admins")
+    #! - ServiceAccount: Service account (less common for tenant ownership)
+    - kind: ""
+
+      #! Subject name (required)
+      #! - For User: username from authentication system
+      #! - For Group: group name from authentication system
+      #! - For ServiceAccount: service account name
+      name: ""
+
+      #@schema/nullable
+      #! API group for the subject (optional)
+      #! Typically omitted (defaults to rbac.authorization.k8s.io for User/Group)
+      #! Only needed for custom authentication systems
+      apiGroup: ""
+
+      #@schema/nullable
+      #! AWS EKS: IAM role name to map to this group (optional, AWS-specific)
+      #! When set on a Group owner, creates an EKS AccessEntry
+      #! Full ARN: arn:aws:iam::{aws_account_id}:role/{iamRoleName}
+      #! AccessEntry resource name: {tenant-name}-{iamRoleName}
+      #! Example: iamRoleName="user-Admin" creates AccessEntry "acme-user-Admin"
+      #! Only applicable when kind=Group
+      #! Note: This field is only available when using AWS overlay
+      iamRoleName: ""
+
+  #! === Fields for type: "tenant" only (Capsule multi-tenant) ===
+
+  #! Maximum namespaces this tenant can create
+  #! Capsule blocks namespace creation once limit reached
+  #! Only applies to type: "tenant"
+  #! Example: namespace_quota=5
+  #!   - Tenant creates: acme-dev, acme-staging, acme-prod = 3 namespaces
+  #!   - Can create 2 more
+  #!   - 6th namespace → BLOCKED by Capsule
+  #! Use case: Prevent namespace sprawl, enforce multi-env strategy
+  #! Examples: 3 (small team), 5 (typical), 10 (large multi-region team)
+  namespace_quota: 5
+
+  #! Cumulative resource quotas across ALL tenant namespaces
+  #! Enforced by Capsule as cluster-scoped ResourceQuota
+  resources:
+    #! Total CPU that can be REQUESTED across all tenant namespaces
+    #! Example: cpu="50"
+    #!   - acme-dev requests 10 cores, acme-prod requests 30 cores = 40 used
+    #!   - Can still request 10 more cores
+    #!   - Next pod requesting 11 cores → BLOCKED
+    #! Note: This limits requests, not actual usage (oversubscription possible)
+    #! Examples: "20" (small tenant), "50" (typical), "200" (large tenant)
+    cpu: "50"
+
+    #! Total memory that can be REQUESTED across all tenant namespaces
+    #! Example: memory="100Gi"
+    #!   - acme-dev requests 20Gi, acme-prod requests 60Gi = 80Gi used
+    #!   - Can request 20Gi more
+    #!   - Next pod requesting 21Gi → BLOCKED
+    #! Examples: "40Gi" (small), "100Gi" (typical), "500Gi" (data-heavy)
+    memory: "100Gi"
+
+    #! Total PersistentVolume storage across all tenant namespaces
+    #! Limits sum of all PVC sizes (not number of PVCs, see max_pvcs)
+    #! Example: storage="500Gi"
+    #!   - acme-dev has 2 PVCs (10Gi + 20Gi) = 30Gi
+    #!   - acme-prod has 1 PVC (400Gi) = 400Gi
+    #!   - Total = 430Gi used, can create 70Gi more
+    #!   - PVC requesting 71Gi → BLOCKED
+    #! Examples: "100Gi" (small), "500Gi" (typical), "5Ti" (data-heavy)
+    storage: "500Gi"
+
+    #! Maximum number of PersistentVolumeClaims across all tenant namespaces
+    #! Independent of storage size limit (controls PVC count, not total size)
+    #! Example: max_pvcs=50
+    #!   - Tenant has 45 PVCs across all namespaces
+    #!   - Can create 5 more (even if they're 1Mi each)
+    #!   - 51st PVC → BLOCKED
+    #! Use case: Prevent PVC sprawl (each PVC has cloud API overhead)
+    #! Examples: 20 (small), 50 (typical), 200 (microservices-heavy)
+    max_pvcs: 50
+
+  #@schema/nullable
+  #! Cost center identifier for chargeback/showback reporting
+  #! Propagated to: Namespace labels (cost-center={value})
+  #! Used by: Kubecost for cost allocation, FinOps reports
+  #! Example: "engineering", "marketing", "CC-12345"
+  #! Applies to: Both type: "tenant" and type: "namespace"
+  cost_center: ""
+
+  #@schema/nullable
+  #! AWS account ID for IAM role ARN construction (AWS EKS only)
+  #! Used to build principalARN in EKS access entries: arn:aws:iam::{aws_account_id}:role/{iamRoleName}
+  #! For namespace type: Used with role_bindings that have createAccessEntry=true
+  #! For tenant type: Used with owners that have iamRoleName set
+  #! Example: "123456789012"
+  aws_account_id: ""
+
+  #@schema/nullable
+  #! Billing contact email for cost alerts and invoices (type: "tenant" only)
+  #! Used by: Cloud cost management tools, internal billing systems
+  #! Receives: Monthly cost reports, budget overage alerts
+  #! Example: "team-lead@example.com", "finance+acme@example.com"
+  billing_contact: ""
+
+  #@schema/nullable
+  #! Allow tenant to create LoadBalancer-type Services (type: "tenant" only)
+  #! When true: Tenant can create Service with type: LoadBalancer
+  #!   - Cloud provisions external load balancer (costs $15-30/month per LB)
+  #!   - Service gets public/internal IP depending on annotations
+  #! When false: Capsule blocks LoadBalancer services, tenant must use Ingress
+  #! Use case: Most tenants should use Ingress (shared LB, cost-efficient)
+  #! Recommended: false (force Ingress), true (special cases needing non-HTTP protocols)
+  allow_loadbalancer: true
+
+  #@schema/nullable
+  #! Default CPU limit applied to pods missing resources.limits.cpu (type: "tenant" only)
+  #! Enforced by: LimitRange in each tenant namespace
+  #! Example: default_cpu_limit="500m"
+  #!   - Tenant creates pod without resources.limits.cpu specified
+  #!   - LimitRange automatically adds: limits.cpu: "500m"
+  #!   - Pod runs with 500m CPU limit
+  #! Use case: Prevent unbounded pods from consuming all node CPU
+  #! Examples: "200m" (small), "500m" (typical), "2" (CPU-heavy)
+  default_cpu_limit: "500m"
+
+  #@schema/nullable
+  #! Default memory limit applied to pods missing resources.limits.memory (type: "tenant" only)
+  #! Enforced by: LimitRange in each tenant namespace
+  #! Example: default_memory_limit="512Mi"
+  #!   - Tenant creates pod without memory limit
+  #!   - LimitRange adds: limits.memory: "512Mi"
+  #!   - Pod OOMKilled if it exceeds 512Mi
+  #! Examples: "256Mi" (small), "512Mi" (typical), "2Gi" (memory-heavy)
+  default_memory_limit: "512Mi"
+
+  #@schema/nullable
+  #! Default CPU request applied to pods missing resources.requests.cpu (type: "tenant" only)
+  #! Enforced by: LimitRange in each tenant namespace
+  #! Affects: Pod scheduling (scheduler reserves this much CPU on node)
+  #! Example: default_cpu_request="100m"
+  #!   - Pod created without CPU request
+  #!   - Gets: requests.cpu: "100m"
+  #!   - Scheduler guarantees 100m CPU available
+  #! Examples: "50m" (small), "100m" (typical), "500m" (CPU-heavy)
+  default_cpu_request: "100m"
+
+  #@schema/nullable
+  #! Default memory request applied to pods missing resources.requests.memory (type: "tenant" only)
+  #! Enforced by: LimitRange in each tenant namespace
+  #! Affects: Pod scheduling and QoS class
+  #! Example: default_memory_request="128Mi"
+  #!   - Pod created without memory request
+  #!   - Gets: requests.memory: "128Mi"
+  #!   - Scheduler guarantees 128Mi available
+  #! Examples: "64Mi" (tiny), "128Mi" (typical), "512Mi" (memory-heavy)
+  default_memory_request: "128Mi"
+
+  #! === Fields for type: "namespace" only (Simple namespace provisioning) ===
+
+  #@schema/nullable
+  #! Description of the namespace purpose (namespace type only)
+  #! Used in metadata.description annotation
+  description: ""
+
+  #@schema/nullable
+  #! Team name override (namespace type only)
+  #! Used in metadata.team label (defaults to tenant name if not specified)
+  team: ""
+
+  #@schema/nullable
+  #! Create a service account named "admin" with admin access (namespace type only)
+  #! When true, creates: ServiceAccount (admin), RoleBinding (admin-admin), Secret (admin-token)
+  #! Default: true (RGD default, omit field to use default)
+  create_service_account: true
+
+  #@schema/nullable
+  #! Additional role bindings for users, groups, or service accounts (namespace type only)
+  #! Grants access to Users (from cluster authentication), Groups, or ServiceAccounts
+  #! Each binding creates a RoleBinding in the namespace that grants permissions
+  #!
+  #! Basic examples:
+  #!   - {kind: "User", name: "alice@example.com", role: "admin"}
+  #!   - {kind: "Group", name: "tenant-admins", role: "edit"}
+  #!   - {kind: "ServiceAccount", name: "prometheus", namespace: "monitoring", role: "view"}
+  #!
+  #! AWS EKS with auto-created access entries (requires AWS overlay):
+  #!   - {kind: "Group", name: "devops-users", role: "edit", createAccessEntry: true, iamRoleName: "user-DevOps"}
+  #!   - Creates both: EKS AccessEntry (IAM → K8s group) + RoleBinding (group → permissions)
+  #!   - AccessEntry name format: {namespace}-{iamRoleName} (e.g., "acme-user-DevOps")
+  #!   - Note: createAccessEntry and iamRoleName are AWS-specific fields (defined in overlay)
+  #!
+  #! Available roles (Kubernetes built-in ClusterRoles):
+  #!   - admin: Full namespace access (read/write/delete all resources, manage RBAC)
+  #!   - edit: Read/write access (cannot modify RBAC)
+  #!   - view: Read-only access
+  role_bindings:
+    #! Subject kind (required)
+    #! - ServiceAccount: For pod identities and automation (e.g., CI/CD, monitoring)
+    #! - User: For individual users (mapped via cluster authentication)
+    #! - Group: For user groups (mapped via cluster authentication)
+    - kind: ""
+
+      #! Subject name (required)
+      #! - For ServiceAccount: service account name (e.g., "prometheus", "gitlab-runner")
+      #! - For User: username from authentication system (e.g., "alice@example.com")
+      #! - For Group: group name from authentication system (e.g., "developers", "acme-admins")
+      name: ""
+
+      #! Namespace for ServiceAccount subjects (optional, only for kind: ServiceAccount)
+      #! Specifies where the ServiceAccount exists (can be different from target namespace)
+      #! Example: ServiceAccount "prometheus" in namespace "monitoring" accessing namespace "acme"
+      #! Leave empty/omit for User and Group kinds
+      namespace: ""
+
+      #! Kubernetes ClusterRole to bind (required)
+      #! Must be one of: admin, edit, view
+      #! - admin: Full access (read/write/delete all resources, manage RBAC)
+      #! - edit: Read/write access (cannot modify RBAC, good for developers)
+      #! - view: Read-only access (good for monitoring, auditing)
+      role: ""
+
+      #! AWS EKS: Create an AccessEntry for this binding (optional, default: false)
+      #! When true, creates an EKS AccessEntry that maps the IAM role to this K8s group
+      #! Only applicable when: kind=Group and iamRoleName is specified
+      #! Requires: aws_account_id set at namespace level, ack-eks-controller component enabled
+      #! Use case: Automatically map IAM roles to Kubernetes groups for user authentication
+      #! Note: This field is only available when using AWS overlay
+      createAccessEntry: false
+
+      #! AWS EKS: IAM role name to map to this group (optional, AWS-specific)
+      #! Used when createAccessEntry=true to construct IAM role ARN
+      #! Full ARN: arn:aws:iam::{aws_account_id}:role/{iamRoleName}
+      #! AccessEntry resource name: {namespace-name}-{iamRoleName}
+      #! Example: iamRoleName="user-Admin" creates AccessEntry "acme-user-Admin"
+      #! Only applicable when kind=Group and createAccessEntry=true
+      #! Note: This field is only available when using AWS overlay
+      iamRoleName: ""
+
+  #@schema/nullable
+  #! Maximum CPU limit any single pod can request (type: "tenant" only)
+  #! Enforced by: LimitRange in each tenant namespace (blocks pod creation)
+  #! Example: max_cpu="4"
+  #!   - Tenant tries to create pod with limits.cpu: "8"
+  #!   - LimitRange blocks it with error: "exceeds max CPU limit"
+  #! Use case: Prevent single pod from consuming entire tenant quota
+  #! Examples: "2" (small), "4" (typical), "16" (large batch jobs)
+  max_cpu: "4"
+
+  #@schema/nullable
+  #! Maximum memory limit any single pod can request (type: "tenant" only)
+  #! Enforced by: LimitRange in each tenant namespace (blocks pod creation)
+  #! Example: max_memory="8Gi"
+  #!   - Tenant tries pod with limits.memory: "16Gi"
+  #!   - BLOCKED by LimitRange
+  #! Use case: Prevent single pod from consuming entire tenant quota
+  #! Examples: "4Gi" (small), "8Gi" (typical), "32Gi" (data processing)
+  max_memory: "8Gi"
