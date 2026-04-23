@@ -1,0 +1,16 @@
+title = "gitleaks config"
+
+[extend]
+# Use the default gitleaks config as a base
+useDefault = true
+
+# Uncomment and add entries to create an allowlist for false positives
+# [allowlist]
+# description = "Allowlist for false positives"
+# paths = [
+#   '''tests/fixtures/.*''',
+# ]
+# regexes = [
+#   '''example\.com/api/.*''',
+# ]
+# stopwords = ["example", "test"]

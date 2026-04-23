@@ -1,0 +1,14 @@
+# =============================================================================
+# Admin-prep manifest for namespace-scoped Flux
+# Cluster: {cluster_name}
+#
+# This manifest must be applied by a cluster administrator.
+# It installs only the minimal cluster-scoped prerequisites:
+#   1. Flux CRDs (OCIRepository, Kustomization)
+#   2. Flux namespace + ServiceAccounts
+#   3. Namespace-scoped RBAC for Flux controllers
+#   4. Deployer RBAC in each target namespace
+#
+# After applying, the platform team can deploy Flux controllers
+# and component sources without cluster-admin access.
+# =============================================================================
