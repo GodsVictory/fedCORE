@@ -1,0 +1,9 @@
+#! overlay-phase: pre-render
+#@ load("@ytt:overlay", "overlay")
+#@ load("@ytt:data", "data")
+
+#@overlay/match by=overlay.subset({"helm": {}}), expects="0+"
+---
+helm:
+  #@overlay/match missing_ok=True
+  resolvedChartRef: #@ "oci://" + data.values.helm_repositories.oci_registry + "/" + data.values.helm_repositories.chart_repo if data.values.helm_repositories.use_mirror else ""

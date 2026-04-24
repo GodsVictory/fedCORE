@@ -11,4 +11,6 @@ spec:
     spec:
       containers:
         #@overlay/match by=overlay.subset({"name": "kro"})
-        - image: #@ data.values.oci_registry + "/kro/kro:v0.8.5"
+        #@ if data.values.helm_repositories.oci_registry:
+        - image: #@ data.values.helm_repositories.oci_registry + "/kro/kro:v0.8.5"
+        #@ end

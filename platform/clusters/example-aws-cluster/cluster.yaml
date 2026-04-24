@@ -14,20 +14,9 @@ ingress_domain: "api.example.com"
 aws:
   account_id: "123456789012"
 
-#! AppDynamics Configuration
-appdynamics:
-  ip_ranges: []
-
 #! Monitoring & Observability
 monitoring:
   enabled: false
-
-#! Istio Gateway configuration
-#! Scheduling (node selectors, tolerations) handled by cluster-wide overlay
-istio_gateway:
-  name: "mt-istio-ingress"
-  gateway_name: "main-gateway"
-  namespace: "istio-ingress"
 
 #! Tenant Policies (Multi-Tenancy with Capsule + Kyverno)
 tenant_policies:

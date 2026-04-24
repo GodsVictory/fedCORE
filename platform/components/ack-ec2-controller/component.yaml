@@ -5,7 +5,6 @@ helm:
   sourceRepo: oci://public.ecr.aws/aws-controllers-k8s
   chart: ec2-chart
   version: "1.11.0"
-  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "oci://public.ecr.aws/aws-controllers-k8s"
 
   #! Release configuration
   release:
@@ -21,7 +20,9 @@ helm:
       region: #@ data.values.region
 
     image:
-      repository: #@ data.values.oci_registry + "/aws-controllers-k8s/ec2-controller"
+      #@ if data.values.helm_repositories.oci_registry:
+      repository: #@ data.values.helm_repositories.oci_registry + "/aws-controllers-k8s/ec2-controller"
+      #@ end
       tag: 1.11.0
 
     #! Disable CARM (replaced by IAMRoleSelector for cross-account)

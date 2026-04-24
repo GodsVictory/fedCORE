@@ -21,7 +21,12 @@ pub fn render_helm_chart(temp_dir: &Path) -> Result<()> {
     let values_file = temp_dir.join("values.yaml");
     fs::write(&values_file, serde_yaml::to_string(&helm.values)?)?;
 
-    let chart_ref = format!("{}/{}", helm.mirror_repo, helm.chart);
+    let repo = if helm.resolved_chart_ref.is_empty() {
+        helm.source_repo.clone()
+    } else {
+        helm.resolved_chart_ref.clone()
+    };
+    let chart_ref = format!("{}/{}", repo, helm.chart);
     let chart_path = helm::resolve_cached_chart(&helm.chart, &helm.version, &chart_ref)?;
     output::detail(&format!("using chart {}", chart_path));
 

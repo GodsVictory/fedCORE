@@ -5,7 +5,6 @@ helm:
   sourceRepo: https://signalfx.github.io/splunk-otel-collector-chart
   chart: splunk-otel-collector
   version: "0.147.1"
-  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "https://signalfx.github.io/splunk-otel-collector-chart"
 
   #! Release configuration
   release:

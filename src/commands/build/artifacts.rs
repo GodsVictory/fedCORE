@@ -42,12 +42,13 @@ pub fn build_single_artifact(
 
     let (pre_render, post_render) =
         collect_overlays(artifact_path, &cluster_data.overlays)?;
+    let (platform_pre, platform_post) = collect_platform_overlays()?;
 
     let component_file = format!("{}/component.yaml", artifact_path);
     let manifests_path;
 
     if Path::new(&component_file).exists() {
-        apply_prerender_overlays(&component_file, &cluster_file, temp_path, &pre_render)?;
+        apply_prerender_overlays(&component_file, &cluster_file, temp_path, &pre_render, &platform_pre)?;
 
         let component_data: MergedComponent = serde_yaml::from_str(
             &fs::read_to_string(temp_path.join("component-merged.yaml"))?,
@@ -74,7 +75,7 @@ pub fn build_single_artifact(
     }
 
     let post_overlay_content =
-        apply_postrender_overlays(&manifests_path, &cluster_file, cluster_dir, &post_render)?;
+        apply_postrender_overlays(&manifests_path, &cluster_file, cluster_dir, &post_render, &platform_post)?;
 
     output::detail("resolving image tags to digests");
     let output_content = resolve_image_digests(&post_overlay_content)?;
