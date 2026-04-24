@@ -53,8 +53,10 @@ pub struct MergedComponent {
 pub struct HelmConfig {
     pub chart: String,
     pub version: String,
-    #[serde(rename = "mirrorRepo")]
-    pub mirror_repo: String,
+    #[serde(rename = "sourceRepo")]
+    pub source_repo: String,
+    #[serde(rename = "resolvedChartRef", default)]
+    pub resolved_chart_ref: String,
     pub release: HelmRelease,
     #[serde(default = "default_empty_object")]
     pub values: serde_json::Value,

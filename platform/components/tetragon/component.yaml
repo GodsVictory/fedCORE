@@ -5,7 +5,6 @@ helm:
   sourceRepo: https://helm.cilium.io/
   chart: tetragon
   version: "1.6.0"
-  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "https://helm.cilium.io/"
 
   #! Release configuration
   release:

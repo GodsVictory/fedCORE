@@ -4,7 +4,6 @@ helm:
   sourceRepo: oci://public.ecr.aws/karpenter
   chart: karpenter
   version: "1.1.1"
-  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "oci://public.ecr.aws/karpenter"
 
   release:
     name: karpenter
@@ -15,7 +14,9 @@ helm:
   values:
     controller:
       image:
-        repository: #@ data.values.oci_registry + "/karpenter/controller"
+        #@ if data.values.helm_repositories.oci_registry:
+        repository: #@ data.values.helm_repositories.oci_registry + "/karpenter/controller"
+        #@ end
         tag: "1.8.3"
         digest: ""
       resources:

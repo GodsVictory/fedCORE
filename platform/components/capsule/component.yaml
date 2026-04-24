@@ -5,7 +5,6 @@ helm:
   sourceRepo: https://projectcapsule.github.io/charts
   chart: capsule
   version: "0.12.4"
-  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "https://projectcapsule.github.io/charts"
 
   #! Release configuration
   release:

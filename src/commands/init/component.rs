@@ -75,7 +75,8 @@ metadata:
 
 helm_repositories:
   use_mirror: false
-  oci_registry_url: "oci://registry.example.com/helm-charts"
+  oci_registry: ""
+  chart_repo: ""
 "#, component_name);
 
         fs::write(component_dir.join("default-values.yaml"), default_values)
@@ -154,7 +155,6 @@ helm:
   sourceRepo: {}
   chart: {}
   version: "{}"
-  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "{}"
 
   #! Release configuration
   release:
@@ -172,7 +172,7 @@ helm:
       limits:
         cpu: 500m
         memory: 512Mi
-"#, chart_repo, chart_name, chart_version, chart_repo, component_name, namespace))
+"#, chart_repo, chart_name, chart_version, component_name, namespace))
 }
 
 fn create_manifests_component(component_name: &str) -> Result<String> {

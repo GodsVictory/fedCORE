@@ -4,7 +4,6 @@ helm:
   sourceRepo: https://kedacore.github.io/charts
   chart: keda
   version: "2.18.0"
-  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "https://kedacore.github.io/charts"
 
   release:
     name: keda
@@ -15,13 +14,19 @@ helm:
   values:
     image:
       keda:
-        registry: #@ data.values.oci_registry
+        #@ if data.values.helm_repositories.oci_registry:
+        registry: #@ data.values.helm_repositories.oci_registry
+        #@ end
         repository: kedacore/keda
       metricsApiServer:
-        registry: #@ data.values.oci_registry
+        #@ if data.values.helm_repositories.oci_registry:
+        registry: #@ data.values.helm_repositories.oci_registry
+        #@ end
         repository: kedacore/keda-metrics-apiserver
       webhooks:
-        registry: #@ data.values.oci_registry
+        #@ if data.values.helm_repositories.oci_registry:
+        registry: #@ data.values.helm_repositories.oci_registry
+        #@ end
         repository: kedacore/keda-admission-webhooks
 
     nodeSelector:

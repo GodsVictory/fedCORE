@@ -5,7 +5,6 @@ helm:
   sourceRepo: https://headlamp-k8s.github.io/headlamp
   chart: headlamp
   version: "0.41.0"
-  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "https://headlamp-k8s.github.io/headlamp"
 
   #! Release configuration
   release:
@@ -15,7 +14,9 @@ helm:
   #! Values for helm template
   values:
     image:
-      registry: #@ data.values.oci_registry
+      #@ if data.values.helm_repositories.oci_registry:
+      registry: #@ data.values.helm_repositories.oci_registry
+      #@ end
       repository: headlamp-k8s/headlamp
 
     #! Replica configuration

@@ -36,6 +36,32 @@ pub fn collect_overlays(
     Ok((pre_render, post_render))
 }
 
+pub fn collect_platform_overlays() -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    let mut pre_render = Vec::new();
+    let mut post_render = Vec::new();
+
+    let dir = Path::new(paths::PLATFORM_OVERLAYS);
+    if !dir.is_dir() {
+        return Ok((pre_render, post_render));
+    }
+
+    for entry in WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "yaml"))
+    {
+        let phase = get_overlay_phase(entry.path())?;
+        if phase == "pre-render" {
+            pre_render.push(entry.path().to_path_buf());
+        } else {
+            post_render.push(entry.path().to_path_buf());
+        }
+    }
+
+    Ok((pre_render, post_render))
+}
+
 fn get_overlay_phase(file_path: &Path) -> Result<String> {
     let content = fs::read_to_string(file_path)?;
     for line in content.lines() {
@@ -51,6 +77,7 @@ pub fn apply_prerender_overlays(
     cluster_file: &str,
     temp_dir: &Path,
     overlays: &[PathBuf],
+    platform_overlays: &[PathBuf],
 ) -> Result<()> {
     let mut args = vec![
         "-f".to_string(),
@@ -60,6 +87,11 @@ pub fn apply_prerender_overlays(
         "-f".to_string(),
         component_file.to_string(),
     ];
+
+    for overlay in platform_overlays {
+        args.push("-f".to_string());
+        args.push(overlay.to_string_lossy().to_string());
+    }
 
     if !overlays.is_empty() {
         output::detail(&format!("{} pre-render overlay(s)", overlays.len()));
@@ -81,6 +113,7 @@ pub fn apply_postrender_overlays(
     cluster_file: &str,
     cluster_dir: &str,
     overlays: &[PathBuf],
+    platform_overlays: &[PathBuf],
 ) -> Result<String> {
     let mut args = vec![
         "--ignore-unknown-comments".to_string(),
@@ -91,6 +124,11 @@ pub fn apply_postrender_overlays(
         "-f".to_string(),
         manifests_path.to_string_lossy().to_string(),
     ];
+
+    for overlay in platform_overlays {
+        args.push("-f".to_string());
+        args.push(overlay.to_string_lossy().to_string());
+    }
 
     if !overlays.is_empty() {
         output::detail(&format!("{} post-render overlay(s)", overlays.len()));
