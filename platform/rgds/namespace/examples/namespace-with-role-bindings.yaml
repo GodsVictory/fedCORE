@@ -1,0 +1,39 @@
+---
+#! Example 3: Namespace with multiple role bindings
+#! Creates a namespace and binds existing service accounts from other namespaces
+#! to various roles (admin, edit, view)
+apiVersion: platform.fedcore.io/v1alpha1
+kind: NamespaceProvisioning
+metadata:
+  name: shared-services
+spec:
+  metadata:
+    environment: prod
+    team: platform
+    description: "Shared services namespace with multi-team access"
+
+  #! Grant different teams different levels of access
+  roleBindings:
+    #! Platform team gets admin access
+    - serviceAccount:
+        name: platform-deployer
+        namespace: platform-cicd
+      role: admin
+
+    #! App team gets edit access (can deploy but not delete)
+    - serviceAccount:
+        name: app-deployer
+        namespace: app-cicd
+      role: edit
+
+    #! Monitoring team gets view access (read-only)
+    - serviceAccount:
+        name: prometheus
+        namespace: monitoring
+      role: view
+
+    #! Another app team gets edit access
+    - serviceAccount:
+        name: api-deployer
+        namespace: api-cicd
+      role: edit

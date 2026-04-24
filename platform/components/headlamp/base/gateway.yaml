@@ -1,0 +1,35 @@
+#@ load("@ytt:data", "data")
+
+#! Headlamp Gateway for Istio service mesh
+#!
+#! Configures Gateway with TLS Passthrough mode
+#! TLS termination happens at the headlamp pod, not the gateway
+
+#@ def istio_gateway_configured():
+#@   return hasattr(data.values, "istio_gateway") and data.values.istio_gateway != None and len(data.values.istio_gateway.namespace) > 0
+#@ end
+
+#@ if istio_gateway_configured():
+---
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: headlamp-gateway
+  namespace: headlamp
+  labels:
+    app.kubernetes.io/name: headlamp
+    app.kubernetes.io/managed-by: fedcore
+spec:
+  selector:
+    app: #@ data.values.istio_gateway.name
+    istio: #@ data.values.istio_gateway.name
+  servers:
+  - port:
+      number: 8443
+      name: tls
+      protocol: TLS
+    hosts:
+    - #@ "ui.headlamp." + data.values.ingress_domain
+    tls:
+      mode: PASSTHROUGH
+#@ end

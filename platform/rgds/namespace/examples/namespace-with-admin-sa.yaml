@@ -1,0 +1,25 @@
+---
+#! Example 2: Namespace with admin service account
+#! Creates a namespace and a service account named "admin" with admin access
+#!
+#! This creates:
+#!   - Namespace: my-app-staging
+#!   - ServiceAccount: admin
+#!   - RoleBinding: admin-admin (binds admin SA to admin role)
+#!   - Secret: admin-token (long-lived token for the SA)
+#!
+#! To retrieve the token:
+#! kubectl get secret admin-token -n my-app-staging -o jsonpath='{.data.token}' | base64 -d
+#!
+apiVersion: platform.fedcore.io/v1alpha1
+kind: NamespaceProvisioning
+metadata:
+  name: my-app-staging
+spec:
+  metadata:
+    environment: staging
+    team: platform
+    description: "Staging namespace for my-app"
+
+  #! Create a service account with admin access
+  createServiceAccount: true

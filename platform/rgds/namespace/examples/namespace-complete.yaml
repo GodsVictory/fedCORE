@@ -1,0 +1,40 @@
+---
+#! Example 4: Complete namespace configuration
+#! Creates a namespace with:
+#! - Admin service account for CI/CD
+#! - Multiple role bindings for different teams
+#! - Custom metadata (labels and annotations)
+apiVersion: platform.fedcore.io/v1alpha1
+kind: NamespaceProvisioning
+metadata:
+  name: my-app-prod
+spec:
+  metadata:
+    environment: prod
+    team: my-app
+    costCenter: CC-12345
+    description: "Production namespace for my-app"
+    owner: "my-app-team@example.com"
+
+  #! Create a service account named "admin" with admin access
+  createServiceAccount: true
+
+  #! Also grant access to other service accounts
+  roleBindings:
+    #! Platform SRE team gets admin access for troubleshooting
+    - serviceAccount:
+        name: sre-admin
+        namespace: platform-admin
+      role: admin
+
+    #! Monitoring service gets view access
+    - serviceAccount:
+        name: prometheus
+        namespace: monitoring
+      role: view
+
+    #! Backup service gets view access to discover resources
+    - serviceAccount:
+        name: velero
+        namespace: velero
+      role: view

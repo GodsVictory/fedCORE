@@ -1,0 +1,38 @@
+#@ load("@ytt:data", "data")
+---
+#! Helm chart configuration
+helm:
+  sourceRepo: https://projectcapsule.github.io/charts
+  chart: capsule
+  version: "0.12.4"
+  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "https://projectcapsule.github.io/charts"
+
+  #! Release configuration
+  release:
+    name: capsule
+    namespace: capsule-system
+
+  #! Values for helm template
+  values:
+    #! Manager configuration
+    manager:
+      resources:
+        limits:
+          cpu: 200m
+          memory: 256Mi
+        requests:
+          cpu: 100m
+          memory: 128Mi
+
+    #! Service monitor for Prometheus (if available)
+    #@ if data.values.monitoring.enabled:
+    serviceMonitor:
+      enabled: true
+      labels:
+        prometheus: kube-prometheus
+    #@ end
+
+    #! Options for Capsule behavior
+    options:
+      #! Force tenant owners to use specific namespace naming
+      forceTenantPrefix: true

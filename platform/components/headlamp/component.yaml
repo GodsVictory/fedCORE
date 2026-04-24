@@ -1,0 +1,79 @@
+#@ load("@ytt:data", "data")
+---
+#! Helm chart configuration
+helm:
+  sourceRepo: https://headlamp-k8s.github.io/headlamp
+  chart: headlamp
+  version: "0.41.0"
+  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "https://headlamp-k8s.github.io/headlamp"
+
+  #! Release configuration
+  release:
+    name: headlamp
+    namespace: headlamp
+
+  #! Values for helm template
+  values:
+    image:
+      registry: registry.example.com
+      repository: headlamp-k8s/headlamp
+
+    #! Replica configuration
+    replicaCount: 2
+
+    #! Resource limits
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+    #! Security context
+    securityContext:
+      fsGroup: 101
+      seccompProfile:
+        type: RuntimeDefault
+
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 100
+      capabilities:
+        drop:
+        - ALL
+
+    #! Pod anti-affinity for high availability
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: headlamp
+            topologyKey: topology.kubernetes.io/zone
+
+    #! ServiceAccount
+    serviceAccount:
+      name: headlamp
+
+    #! TLS Configuration for passthrough mode
+    config:
+      tlsCertPath: /headlamp-cert/tls.crt
+      tlsKeyPath: /headlamp-cert/tls.key
+
+    #! Health probes for HTTPS
+    livenessProbe:
+      httpGet:
+        path: /
+        port: http
+        scheme: HTTPS
+    
+    readinessProbe:
+      httpGet:
+        path: /
+        port: http
+        scheme: HTTPS

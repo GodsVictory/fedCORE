@@ -1,0 +1,20 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! Headlamp Service port name overlay
+#!
+#! Changes port name from "http" to "https" for TLS passthrough
+#! This tells Istio to treat traffic as raw TCP instead of parsing as HTTP
+
+#@ def istio_gateway_configured():
+#@   return hasattr(data.values, "istio_gateway") and data.values.istio_gateway != None and len(data.values.istio_gateway.namespace) > 0
+#@ end
+
+#@ if istio_gateway_configured():
+#@overlay/match by=overlay.subset({"kind": "Service", "metadata": {"name": "headlamp"}})
+---
+spec:
+  ports:
+  #@overlay/match by=overlay.subset({"port": 80})
+  - name: https
+#@ end

@@ -1,0 +1,14 @@
+#@ load("@ytt:overlay", "overlay")
+#@ load("@ytt:data", "data")
+
+#! Image Registry Overlay for KRO
+#! Swaps the default registry.k8s.io to the cluster's configured OCI registry
+
+#@overlay/match by=overlay.subset({"kind": "Deployment", "metadata": {"name": "kro", "namespace": "kro-system"}})
+---
+spec:
+  template:
+    spec:
+      containers:
+        #@overlay/match by=overlay.subset({"name": "kro"})
+        - image: #@ data.values.oci_registry + "/kro/kro:v0.8.5"

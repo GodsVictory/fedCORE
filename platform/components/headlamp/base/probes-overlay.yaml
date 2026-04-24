@@ -1,0 +1,29 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! Headlamp HTTPS probes overlay
+#!
+#! Updates health probes to use HTTPS when TLS is configured
+#! Required because the Helm chart hardcodes HTTP probes
+
+#@ def istio_gateway_configured():
+#@   return hasattr(data.values, "istio_gateway") and data.values.istio_gateway != None and len(data.values.istio_gateway.namespace) > 0
+#@ end
+
+#@ if istio_gateway_configured():
+#@overlay/match by=overlay.subset({"kind": "Deployment", "metadata": {"name": "headlamp"}})
+---
+spec:
+  template:
+    spec:
+      containers:
+      #@overlay/match by=overlay.subset({"name": "headlamp"})
+      - livenessProbe:
+          httpGet:
+            #@overlay/match missing_ok=True
+            scheme: HTTPS
+        readinessProbe:
+          httpGet:
+            #@overlay/match missing_ok=True
+            scheme: HTTPS
+#@ end

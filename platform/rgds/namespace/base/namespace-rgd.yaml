@@ -1,0 +1,187 @@
+#@ load("@ytt:data", "data")
+
+---
+#! KRO ResourceGraphDefinition for Namespace Provisioning
+#!
+#! Creates a namespace with optional service account and RBAC bindings.
+#! Supports binding ServiceAccounts, Users, and Groups to namespace roles.
+#!
+#! Use Cases:
+#! - CI/CD namespace creation with deployer service account
+#! - Grant authenticated users/groups access via cluster authentication
+#! - Shared service namespaces with multiple team access
+#! - Environment-specific namespaces (dev, staging, prod)
+
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: namespace.platform.fedcore.io
+  labels:
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+spec:
+  schema:
+    apiVersion: v1alpha1
+    group: platform.fedcore.io
+    kind: NamespaceProvisioning
+    types:
+      RoleBinding:
+        #! Subject kind: ServiceAccount, User, or Group
+        #! - ServiceAccount: For pod identities and automation
+        #! - User: For individual users (mapped via cluster authentication)
+        #! - Group: For user groups (mapped via cluster authentication)
+        kind: string
+
+        #! Subject name
+        #! - For ServiceAccount: service account name
+        #! - For User: username (e.g., "alice@example.com")
+        #! - For Group: group name (e.g., "developers", "tenant-admins")
+        name: string
+
+        #! Namespace (only required for ServiceAccount subjects)
+        #! Leave empty/omit for User and Group
+        namespace: string | optional
+
+        #! Kubernetes default ClusterRole to bind (admin, edit, or view)
+        #! admin: Full access (read/write/delete all resources)
+        #! edit: Read/write access (cannot modify RBAC)
+        #! view: Read-only access
+        role: string
+    spec:
+      #! The namespace name will match the instance name (metadata.name)
+      #! Instance names must be DNS-compliant (lowercase alphanumeric with hyphens)
+      #! Pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+      #! Length: 1-63 characters
+
+      #! Optional metadata fields for the namespace
+      #! Common labels and annotations for namespace organization
+      metadata:
+        #! Environment label (e.g., dev, staging, prod)
+        environment: string | optional
+
+        #! Team/owner label (e.g., platform, app-team)
+        team: string | optional
+
+        #! Cost center for billing/chargeback
+        costCenter: string | optional
+
+        #! Description annotation
+        description: string | optional
+
+        #! Owner/contact annotation
+        owner: string | optional
+
+      #! Create a service account named "admin" with admin access to this namespace
+      #! When true, creates:
+      #!   - ServiceAccount: admin
+      #!   - RoleBinding: admin-admin
+      #!   - Secret: admin-token (retrieve with: kubectl get secret admin-token -n <namespace> -o jsonpath='{.data.token}' | base64 -d)
+      #! When false, no service account is created
+      createServiceAccount: boolean | default=true
+
+      #! List of role bindings to create in the namespace
+      #! Maps Users, Groups (from cluster authentication), or ServiceAccounts to roles
+      #! Supports Kubernetes default ClusterRoles: admin, edit, view
+      #! Optional - can be empty array or omitted
+      roleBindings: "[]RoleBinding | optional"
+
+  resources:
+    #! Resource 1: Create the namespace
+    - id: targetNamespace
+      template:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: ${schema.metadata.name}
+          labels:
+            platform.fedcore.io/cluster: #@ data.values.cluster_name
+            platform.fedcore.io/managed-by: kro
+            #! Organizational metadata (from spec.metadata, if provided)
+            platform.fedcore.io/environment: "${has(schema.spec.metadata) && has(schema.spec.metadata.environment) ? schema.spec.metadata.environment : 'unknown'}"
+            platform.fedcore.io/team: "${has(schema.spec.metadata) && has(schema.spec.metadata.team) ? schema.spec.metadata.team : 'unknown'}"
+            platform.fedcore.io/cost-center: "${has(schema.spec.metadata) && has(schema.spec.metadata.costCenter) ? schema.spec.metadata.costCenter : 'unknown'}"
+          annotations:
+            platform.fedcore.io/description: "${has(schema.spec.metadata) && has(schema.spec.metadata.description) ? schema.spec.metadata.description : ''}"
+            platform.fedcore.io/owner: "${has(schema.spec.metadata) && has(schema.spec.metadata.owner) ? schema.spec.metadata.owner : ''}"
+
+    #! Resource 2: Create service account (conditional)
+    - id: adminServiceAccount
+      includeWhen:
+        - ${schema.spec.createServiceAccount}
+      template:
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: admin
+          namespace: ${targetNamespace.metadata.name}
+          labels:
+            platform.fedcore.io/cluster: #@ data.values.cluster_name
+            platform.fedcore.io/managed-by: kro
+
+    #! Resource 3: Bind created service account to admin role (conditional)
+    - id: adminServiceAccountRoleBinding
+      includeWhen:
+        - ${schema.spec.createServiceAccount}
+      template:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        metadata:
+          name: admin-admin
+          namespace: ${targetNamespace.metadata.name}
+          labels:
+            platform.fedcore.io/cluster: #@ data.values.cluster_name
+            platform.fedcore.io/managed-by: kro
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: ClusterRole
+          name: admin
+        subjects:
+          - kind: ServiceAccount
+            name: ${adminServiceAccount.metadata.name}
+            namespace: ${targetNamespace.metadata.name}
+
+    #! Resource 4: Create long-lived token secret for service account (conditional)
+    #! In Kubernetes 1.24+, tokens are not automatically created
+    #! This creates a token secret that can be retrieved for external use
+    - id: adminServiceAccountToken
+      includeWhen:
+        - ${schema.spec.createServiceAccount}
+      template:
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: admin-token
+          namespace: ${targetNamespace.metadata.name}
+          annotations:
+            kubernetes.io/service-account.name: admin
+          labels:
+            platform.fedcore.io/cluster: #@ data.values.cluster_name
+            platform.fedcore.io/managed-by: kro
+        type: kubernetes.io/service-account-token
+
+    #! Resource 5: Create role bindings for users, groups, and service accounts
+    #! Uses forEach to create one RoleBinding per entry in roleBindings array
+    #! Supports: ServiceAccount, User (via cluster authentication), Group (via cluster authentication)
+    - id: externalRoleBindings
+      includeWhen:
+        - ${has(schema.spec.roleBindings) && size(schema.spec.roleBindings) > 0}
+      forEach:
+        - binding: ${schema.spec.roleBindings}
+      template:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        metadata:
+          name: ${binding.name}-${binding.role}
+          namespace: ${targetNamespace.metadata.name}
+          labels:
+            platform.fedcore.io/cluster: #@ data.values.cluster_name
+            platform.fedcore.io/managed-by: kro
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: ClusterRole
+          name: ${binding.role}
+        subjects:
+          - kind: ${binding.kind}
+            name: ${binding.name}
+            #! Namespace only applies to ServiceAccount subjects
+            #! CEL expression: if kind is ServiceAccount and namespace is set, use it; otherwise empty
+            namespace: "${binding.kind == 'ServiceAccount' && has(binding.namespace) ? binding.namespace : ''}"

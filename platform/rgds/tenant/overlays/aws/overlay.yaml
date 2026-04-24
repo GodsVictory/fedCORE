@@ -1,0 +1,437 @@
+#! ═══════════════════════════════════════════════════════════════════════════
+#! AWS Overlay for Tenant RGD
+#! ═══════════════════════════════════════════════════════════════════════════
+#!
+#! Extends the base tenant RGD with AWS-specific resources for multi-account
+#! tenant isolation using EKS Pod Identity and ACK (AWS Controllers for K8s).
+#!
+#! Schema additions:
+#!   - aws.accountId: tenant's dedicated AWS account (provisioned by LZA)
+#!   - owners[].iamRoleName: optional IAM-to-Kubernetes group mapping
+#!
+#! Resources added:
+#!   1. IAMRoleSelectors (bootstrap + provisioner) — route ACK resources to the
+#!      correct IAM role in the tenant account via label-based selection
+#!   2. Permission Boundary — caps what any tenant-created role can do
+#!   3. ACK Provisioner Role — lets ACK controllers provision AWS resources
+#!      in the tenant account (created via FedCoreBootstrapRole)
+#!   4. Two-tier Pod Identity roles:
+#!      - Cluster account role: Pod Identity Agent provides credentials
+#!      - Tenant account role: cluster role assumes this for cross-account access
+#!      Flow: Pod → Pod Identity → Cluster Role → sts:AssumeRole → Tenant Role
+#!   5. EKS AccessEntries — maps tenant owner IAM roles to Kubernetes groups
+#!      (conditional on ack-eks-controller being enabled)
+#!
+#! Patches to base resources:
+#!   - capsuleTenant: adds aws-account-id annotation for cross-RGD discovery
+#!   - deploymentServiceAccount: adds Pod Identity role-arn annotation
+#!
+#! ═══════════════════════════════════════════════════════════════════════════
+
+#@ load("@ytt:data", "data")
+#@ load("@ytt:sha256", "sha256")
+#@ load("@ytt:overlay", "overlay")
+
+#! Generate deterministic role suffix for IAM roles to prevent predictable naming
+#@ def generate_role_suffix(tenant_name):
+#@   combined = tenant_name + data.values.cluster_name + str(data.values.aws.account_id)
+#@   return sha256.sum(combined)[0:8]
+#@ end
+
+#@ def ack_eks_controller_enabled():
+#@   for component in data.values.components:
+#@     if component.name == "ack-eks-controller" and component.enabled:
+#@       return True
+#@     end
+#@   end
+#@   return False
+#@ end
+
+#@overlay/match by=overlay.subset({"kind": "ResourceGraphDefinition"})
+---
+spec:
+  #! Add AWS-specific schema fields
+  #@overlay/match missing_ok=True
+  schema:
+    #@overlay/match missing_ok=True
+    spec:
+      #@overlay/match missing_ok=True
+      #! AWS account information (for multi-account architecture)
+      aws:
+        #! Tenant's dedicated AWS account ID (12 digits)
+        #! This account is provisioned by Landing Zone Accelerator (LZA)
+        #! Used for cross-account resource provisioning via ACK
+        accountId: string
+
+        #! AWS region for this tenant (defaults to cluster region if not specified)
+        region: string | optional
+
+      #! Extend owners type to support IAM role mappings (AWS-specific)
+      #! When an owner has kind=Group and iamRoleName is set,
+      #! an EKS AccessEntry is created to map the IAM role to the group
+      owners:
+        - kind: string
+          name: string
+          apiGroup: string | optional
+          #! AWS-specific: IAM role name to map to this Kubernetes group (optional)
+          #! Only applicable when kind=Group
+          #! Creates an EKS AccessEntry: IAM role → Kubernetes group
+          iamRoleName: string | optional
+
+  #@overlay/match missing_ok=True
+  resources:
+    #! Patch Capsule Tenant to add AWS-specific annotation
+    #@overlay/match by="id"
+    - id: capsuleTenant
+      template:
+        metadata:
+          #@overlay/match missing_ok=True
+          annotations:
+            #@overlay/match missing_ok=True
+            #! Multi-Account Architecture: Store tenant AWS account ID
+            #! This enables cross-RGD discovery - WebApp/Database RGDs look up
+            #! the tenant's account ID to provision resources in the correct account
+            platform.fedcore.io/aws-account-id: ${schema.spec.aws.accountId}
+
+    #! ═══════════════════════════════════════════════════════════════════════
+    #! IAMRoleSelector CRDs for Cross-Account Routing
+    #! ═══════════════════════════════════════════════════════════════════════
+    #! Two IAMRoleSelectors per tenant:
+    #! 1. Bootstrap: FedCoreBootstrapRole — for creating foundational IAM resources
+    #! 2. Provisioner: fedcore-ack-provisioner — for ongoing resource provisioning
+    #!
+    #! These are pure K8s resources (no AWS calls), created immediately by kro.
+    #! ACK controllers use them to determine which IAM role to assume.
+    #!
+    #! PREREQUISITE: ACK IAM controller must have permission to assume
+    #! FedCoreBootstrapRole in tenant accounts.
+
+    #! Bootstrap IAMRoleSelector: routes bootstrap-labeled resources to FedCoreBootstrapRole
+    #@overlay/append
+    - id: bootstrapRoleSelector
+      template:
+        apiVersion: services.k8s.aws/v1alpha1
+        kind: IAMRoleSelector
+        metadata:
+          name: ${schema.spec.tenantName}-bootstrap
+          labels:
+            platform.fedcore.io/tenant: ${schema.spec.tenantName}
+            platform.fedcore.io/managed-by: kro
+        spec:
+          arn: #@ "arn:aws:iam::${schema.spec.aws.accountId}:role/FedCoreBootstrapRole"
+          resourceLabelSelector:
+            matchLabels:
+              platform.fedcore.io/ack-target: ${schema.spec.tenantName}
+              platform.fedcore.io/resource-type: bootstrap
+
+    #! Provisioner IAMRoleSelector: routes provisioned-labeled resources to fedcore-ack-provisioner
+    #@overlay/append
+    - id: provisionerRoleSelector
+      template:
+        apiVersion: services.k8s.aws/v1alpha1
+        kind: IAMRoleSelector
+        metadata:
+          name: ${schema.spec.tenantName}
+          labels:
+            platform.fedcore.io/tenant: ${schema.spec.tenantName}
+            platform.fedcore.io/managed-by: kro
+        spec:
+          arn: #@ "arn:aws:iam::${schema.spec.aws.accountId}:role/fedcore-ack-provisioner"
+          resourceLabelSelector:
+            matchLabels:
+              platform.fedcore.io/ack-target: ${schema.spec.tenantName}
+              platform.fedcore.io/resource-type: provisioned
+
+    #! ═══════════════════════════════════════════════════════════════════════
+    #! BOOTSTRAP PHASE: Foundational IAM Resources in Tenant Account
+    #! ═══════════════════════════════════════════════════════════════════════
+    #! These resources are created FIRST using LZA's FedCoreBootstrapRole
+    #! (routed via bootstrapRoleSelector above).
+    #! Once these exist, subsequent resources use the fedcore-ack-provisioner role
+    #! (routed via provisionerRoleSelector above).
+
+    #! Bootstrap Step 1: Create Permission Boundary
+    #! Prevents tenant roles from escalating privileges
+    #@overlay/append
+    - id: permissionBoundary
+      readyWhen: status.conditions.#(type=="ACK.ResourceSynced").status=="True"
+      template:
+        apiVersion: iam.services.k8s.aws/v1alpha1
+        kind: Policy
+        metadata:
+          name: ${schema.spec.tenantName}-boundary
+          namespace: ${cicdNamespace.metadata.name}
+          labels:
+            platform.fedcore.io/tenant: ${schema.spec.tenantName}
+            platform.fedcore.io/resource-type: bootstrap
+            #! IAMRoleSelector routing: matched by bootstrapRoleSelector
+            platform.fedcore.io/ack-target: ${schema.spec.tenantName}
+        spec:
+          name: TenantMaxPermissions
+          description: Permission boundary for all tenant-created IAM roles
+          policyDocument: |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {"Sid": "AllowAWSServiceAccess", "Effect": "Allow", "Action": ["s3:*", "rds:*", "dynamodb:*", "elasticache:*", "sqs:*", "sns:*", "kinesis:*", "lambda:*", "secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret", "kms:Decrypt", "kms:DescribeKey", "ec2:Describe*", "ec2:CreateTags", "cloudwatch:PutMetricData", "logs:*"], "Resource": "*"},
+                {"Sid": "AllowIAMRoleCreationWithBoundary", "Effect": "Allow", "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:TagRole", "iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies"], "Resource": "arn:aws:iam::*:role/*", "Condition": {"StringEquals": {"iam:PermissionsBoundary": "arn:aws:iam::${schema.spec.aws.accountId}:policy/TenantMaxPermissions"}}},
+                {"Sid": "DenyIAMUserOperations", "Effect": "Deny", "Action": ["iam:CreateUser", "iam:CreateAccessKey", "iam:DeleteUserPolicy", "iam:PutUserPolicy", "iam:AttachUserPolicy", "iam:UpdateUser"], "Resource": "*"},
+                {"Sid": "DenyIAMPolicyModification", "Effect": "Deny", "Action": ["iam:CreatePolicyVersion", "iam:DeletePolicy", "iam:DeletePolicyVersion", "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy", "iam:UpdateAssumeRolePolicy"], "Resource": "*"},
+                {"Sid": "DenyOrganizationsAccess", "Effect": "Deny", "Action": ["organizations:*", "account:*"], "Resource": "*"},
+                {"Sid": "DenySecurityServiceModification", "Effect": "Deny", "Action": ["cloudtrail:DeleteTrail", "cloudtrail:StopLogging", "config:DeleteConfigRule", "config:StopConfigurationRecorder", "guardduty:DeleteDetector", "securityhub:DeleteMembers"], "Resource": "*"}
+              ]
+            }
+
+    #! Bootstrap Step 2: Create ACK Provisioner Role
+    #! Allows ACK controllers to provision resources in tenant account
+    #!
+    #! POD IDENTITY: Trust policy uses specific ACK controller role principal
+    #! This is more secure than trusting the entire cluster account
+    #@overlay/append
+    - id: ackProvisionerRole
+      readyWhen: status.conditions.#(type=="ACK.ResourceSynced").status=="True"
+      template:
+        apiVersion: iam.services.k8s.aws/v1alpha1
+        kind: Role
+        metadata:
+          name: ${schema.spec.tenantName}-ack-prov
+          namespace: ${cicdNamespace.metadata.name}
+          labels:
+            platform.fedcore.io/tenant: ${schema.spec.tenantName}
+            platform.fedcore.io/resource-type: bootstrap
+            platform.fedcore.io/auth-method: pod-identity
+            #! IAMRoleSelector routing: matched by bootstrapRoleSelector
+            platform.fedcore.io/ack-target: ${schema.spec.tenantName}
+        spec:
+          name: fedcore-ack-provisioner
+          description: Allows ACK controllers to provision resources via Pod Identity
+          maxSessionDuration: 3600
+          #! POD IDENTITY TRUST: Principal is the specific ACK controller role (not account root)
+          #! The ACK controller gets credentials from Pod Identity, then assumes this role
+          assumeRolePolicyDocument: #@ "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [{\n    \"Effect\": \"Allow\",\n    \"Principal\": {\"AWS\": \"arn:aws:iam::" + str(data.values.aws.account_id) + ":role/" + data.values.cluster_name + "-ack-iam-controller\"},\n    \"Action\": \"sts:AssumeRole\",\n    \"Condition\": {\"StringEquals\": {\"sts:ExternalId\": \"fedcore-ack-${schema.spec.tenantName}\"}}\n  }]\n}"
+          policies:
+            - policyName: AllowResourceProvisioning
+              policyDocument: |
+                {
+                  "Version": "2012-10-17",
+                  "Statement": [{
+                    "Effect": "Allow",
+                    "Action": ["s3:*", "rds:*", "dynamodb:*", "elasticache:*", "sqs:*", "sns:*", "kinesis:*", "lambda:*", "ec2:*", "iam:CreateRole", "iam:GetRole", "iam:UpdateRole", "iam:TagRole", "iam:PutRolePolicy", "iam:GetRolePolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:ListAttachedRolePolicies", "iam:ListRolePolicies", "iam:CreatePolicy", "iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions"],
+                    "Resource": "*"
+                  }]
+                }
+
+    #! ═══════════════════════════════════════════════════════════════════════
+    #! TENANT PHASE: Two-Tier IAM Role Architecture (Pod Identity)
+    #! ═══════════════════════════════════════════════════════════════════════
+    #!
+    #! Pod Identity Architecture:
+    #! 1. Cluster Account Role: Pod gets credentials via Pod Identity Agent
+    #! 2. Tenant Account Role: Cluster role assumes this for actual permissions
+    #!
+    #! Flow: Pod → Pod Identity → Cluster Role → sts:AssumeRole → Tenant Role
+    #!
+    #! Benefits:
+    #! - No OIDC provider needed in tenant accounts
+    #! - Simpler trust policies (IAM role principals)
+    #! - 15-minute credential rotation
+    #! - Consistent with ACK controller pattern
+
+    #! Create Cluster Account Role for Deployer (Pod Identity)
+    #! This role is what the ServiceAccount actually uses
+    #@overlay/append
+    - id: clusterDeployerRole
+      readyWhen: status.conditions.#(type=="ACK.ResourceSynced").status=="True"
+      template:
+        apiVersion: iam.services.k8s.aws/v1alpha1
+        kind: Role
+        metadata:
+          name: ${schema.spec.tenantName}-deployer-cluster
+          namespace: ${cicdNamespace.metadata.name}
+          labels:
+            platform.fedcore.io/tenant: ${schema.spec.tenantName}
+            platform.fedcore.io/resource-type: pod-identity
+            platform.fedcore.io/role-tier: cluster
+          annotations:
+            #! This role is created in the CLUSTER account (not tenant account)
+            #! Opt out of Kyverno ack-tenant-metadata mutation and IAMRoleSelector routing
+            platform.fedcore.io/cluster-account: "true"
+            platform.fedcore.io/description: "Cluster account role for ${schema.spec.tenantName} deployer - used by Pod Identity"
+        spec:
+          name: #@ data.values.cluster_name + "-" + "${schema.spec.tenantName}-deployer-" + generate_role_suffix("${schema.spec.tenantName}")
+          description: Cluster role for ${schema.spec.tenantName} deployer (Pod Identity)
+          maxSessionDuration: 3600
+          #! POD IDENTITY TRUST: Service principal pods.eks.amazonaws.com
+          #! The Pod Identity Agent validates the pod and provides credentials for this role
+          assumeRolePolicyDocument: #@ "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [{\n    \"Effect\": \"Allow\",\n    \"Principal\": {\"Service\": \"pods.eks.amazonaws.com\"},\n    \"Action\": [\"sts:AssumeRole\", \"sts:TagSession\"],\n    \"Condition\": {\n      \"StringEquals\": {\"aws:SourceAccount\": \"" + str(data.values.aws.account_id) + "\"},\n      \"ArnEquals\": {\"aws:SourceArn\": \"arn:aws:eks:" + data.values.region + ":" + str(data.values.aws.account_id) + ":cluster/" + data.values.cluster_name + "\"}\n    }\n  }]\n}"
+          policies:
+            #! This role only has permission to assume the tenant account role
+            - policyName: AssumeTenantRole
+              policyDocument: #@ "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [{\n    \"Effect\": \"Allow\",\n    \"Action\": \"sts:AssumeRole\",\n    \"Resource\": \"arn:aws:iam::${schema.spec.aws.accountId}:role/${schema.spec.tenantName}-deployer-" + generate_role_suffix("${schema.spec.tenantName}") + "\"\n  }]\n}"
+          tags:
+            - key: platform.fedcore.io/cluster
+              value: #@ data.values.cluster_name
+            - key: platform.fedcore.io/tenant
+              value: ${schema.spec.tenantName}
+            - key: platform.fedcore.io/auth-method
+              value: pod-identity
+
+    #! Create Tenant Account Role for Deployer (CI/CD Operations)
+    #!
+    #! ┌─────────────────────────────────────────────────────────────────┐
+    #! │ CRITICAL INSIGHT: This role has ZERO AWS permissions by default│
+    #! └─────────────────────────────────────────────────────────────────┘
+    #!
+    #! Why? Because CI/CD pipelines only run `kubectl apply`:
+    #!
+    #! GitHub Actions Workflow:
+    #!   steps:
+    #!     - name: Deploy
+    #!       run: kubectl apply -f manifests/  # ← Uses Kubernetes RBAC, not AWS IAM
+    #!
+    #! At no point does GitHub Actions directly call AWS APIs.
+    #!
+    #! ┌─────────────────────────────────────────────────────────────────┐
+    #! │ Who Creates/Accesses AWS Resources?                            │
+    #! ├─────────────────────────────────────────────────────────────────┤
+    #! │ ACK Controllers  → Use fedcore-ack-provisioner role             │
+    #! │ Application Pods → Use app-specific roles (WebApp RGD)          │
+    #! │ CI/CD Pipelines  → Use Kubernetes RBAC (this ServiceAccount)   │
+    #! └─────────────────────────────────────────────────────────────────┘
+    #!
+    #! When would CI/CD need AWS permissions?
+    #! ───────────────────────────────────────
+    #! Only if you run Jobs/Pods in {tenant}-cicd namespace that call AWS APIs:
+    #!
+    #!   apiVersion: batch/v1
+    #!   kind: Job
+    #!   metadata:
+    #!     name: custom-migration-script
+    #!     namespace: acme-cicd
+    #!   spec:
+    #!     template:
+    #!       spec:
+    #!         serviceAccountName: acme-deployer  # ← Would use this role
+    #!         containers:
+    #!           - name: migrate
+    #!             command: ["aws", "s3", "cp", ...]  # ← Direct AWS API call
+    #!
+    #! For these rare cases, create a separate ServiceAccount with specific permissions
+    #! or extend this role via an overlay. Don't give broad permissions by default.
+    #!
+    #! How to validate deployments without AWS permissions:
+    #! ────────────────────────────────────────────────────
+    #!   #! Check Kubernetes status (preferred)
+    #!   kubectl get bucket my-app-data -o jsonpath='{.status.bucketName}'
+    #!   kubectl get bucket my-app-data -o jsonpath='{.status.conditions[?(@.type=="ACK.ResourceSynced")].status}'
+    #!
+    #!   #! ACK populates status fields after creating AWS resources
+    #!   #! No need to call AWS APIs directly!
+    #!
+    #@overlay/append
+    - id: tenantDeployerRole
+      readyWhen: status.conditions.#(type=="ACK.ResourceSynced").status=="True"
+      template:
+        apiVersion: iam.services.k8s.aws/v1alpha1
+        kind: Role
+        metadata:
+          name: ${schema.spec.tenantName}-deployer-tenant
+          namespace: ${cicdNamespace.metadata.name}
+          labels:
+            platform.fedcore.io/tenant: ${schema.spec.tenantName}
+            platform.fedcore.io/resource-type: provisioned
+            platform.fedcore.io/role-tier: tenant
+            #! IAMRoleSelector routing: matched by provisionerRoleSelector
+            platform.fedcore.io/ack-target: ${schema.spec.tenantName}
+        spec:
+          name: #@ "${schema.spec.tenantName}-deployer-" + generate_role_suffix("${schema.spec.tenantName}")
+          description: CI/CD role for ${schema.spec.tenantName} - Kubernetes operations only (no AWS permissions)
+          maxSessionDuration: 3600
+          #! SECURITY: Permission Boundary prevents privilege escalation
+          permissionsBoundary: #@ "arn:aws:iam::${schema.spec.aws.accountId}:policy/TenantMaxPermissions"
+          #! POD IDENTITY TRUST: Cluster account role can assume this tenant role
+          #! No OIDC provider needed!
+          assumeRolePolicyDocument: #@ "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [{\n    \"Effect\": \"Allow\",\n    \"Principal\": {\"AWS\": \"arn:aws:iam::" + str(data.values.aws.account_id) + ":role/" + data.values.cluster_name + "-${schema.spec.tenantName}-deployer-" + generate_role_suffix("${schema.spec.tenantName}") + "\"},\n    \"Action\": \"sts:AssumeRole\",\n    \"Condition\": {\"StringEquals\": {\"sts:ExternalId\": \"fedcore-tenant-${schema.spec.tenantName}\"}}\n  }]\n}"
+          #! ZERO AWS PERMISSIONS BY DEFAULT
+          #! CI/CD only needs Kubernetes RBAC (defined in tenant-rgd.yaml base)
+          #! If you need AWS access in CI/CD Jobs, either:
+          #! 1. Create a separate ServiceAccount with specific permissions
+          #! 2. Add an overlay to extend this role for your use case
+          #! 3. Use app-specific roles (created by WebApp/Database/API RGDs)
+          policies:
+            - policyName: MinimalIdentityAccess
+              policyDocument: |
+                {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                    {
+                      "Sid": "AllowGetCallerIdentity",
+                      "Effect": "Allow",
+                      "Action": ["sts:GetCallerIdentity"],
+                      "Resource": "*"
+                    }
+                  ]
+                }
+          tags:
+            - key: platform.fedcore.io/cluster
+              value: #@ data.values.cluster_name
+            - key: platform.fedcore.io/tenant
+              value: ${schema.spec.tenantName}
+
+    #! Patch ServiceAccount to add Pod Identity annotation
+    #! Points to the CLUSTER account role (not tenant role)
+    #@overlay/match by="id"
+    - id: deploymentServiceAccount
+      template:
+        metadata:
+          #@overlay/match missing_ok=True
+          annotations:
+            #@overlay/match missing_ok=True
+            #! POD IDENTITY: Points to cluster account role
+            #! The Pod Identity Agent will provide credentials for this role
+            #! The cluster role has permission to assume the tenant role
+            eks.amazonaws.com/role-arn: #@ "arn:aws:iam::" + str(data.values.aws.account_id) + ":role/" + data.values.cluster_name + "-${schema.spec.tenantName}-deployer-" + generate_role_suffix("${schema.spec.tenantName}")
+            #! Add environment variable hints for AWS SDK to auto-assume tenant role
+            platform.fedcore.io/tenant-role-arn: #@ "arn:aws:iam::${schema.spec.aws.accountId}:role/${schema.spec.tenantName}-deployer-" + generate_role_suffix("${schema.spec.tenantName}")
+            platform.fedcore.io/tenant-role-external-id: #@ "fedcore-tenant-${schema.spec.tenantName}"
+
+    #! ═══════════════════════════════════════════════════════════════════════
+    #! EKS ACCESS ENTRY: Map Tenant IAM Role to Kubernetes Group
+    #! ═══════════════════════════════════════════════════════════════════════
+    #! Creates EKS access entries for tenant owners (kind=Group) that have
+    #! iamRoleName specified. This maps IAM roles to Kubernetes groups,
+    #! enabling IAM users/roles to access the cluster as tenant owners.
+    #!
+    #! Prerequisites:
+    #! - ACK EKS controller must be installed
+    #! - Tenant must have aws.accountId specified in spec
+    #! - Owner must be kind=Group with iamRoleName set
+    #!
+    #! Capsule automatically grants tenant owners access to all tenant namespaces.
+    #! Only included if ack-eks-controller component is enabled
+    #@ if ack_eks_controller_enabled():
+    #@overlay/append
+    - id: eksAccessEntries
+      includeWhen:
+        - ${owner.kind == "Group" && has(owner.iamRoleName)}
+      forEach:
+        - owner: ${schema.spec.owners}
+      template:
+        apiVersion: eks.services.k8s.aws/v1alpha1
+        kind: AccessEntry
+        metadata:
+          name: ${schema.spec.tenantName}-${owner.iamRoleName}
+          namespace: ack-system
+          labels:
+            platform.fedcore.io/tenant: ${schema.spec.tenantName}
+            platform.fedcore.io/cluster: #@ data.values.cluster_name
+            platform.fedcore.io/managed-by: kro
+        spec:
+          clusterName: #@ data.values.cluster_name
+          #! Maps IAM role to Kubernetes group (from owner.name)
+          principalARN: #@ "arn:aws:iam::${schema.spec.aws.accountId}:role/${owner.iamRoleName}"
+          #! To Kubernetes group (owner is automatically granted tenant access by Capsule)
+          kubernetesGroups:
+            - ${owner.name}
+          type: STANDARD
+    #@ end

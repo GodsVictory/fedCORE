@@ -1,0 +1,22 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! On-premises Headlamp configuration - Service values
+#!
+#! Configures Service type for on-premises clusters
+
+#! overlay-phase: pre-render
+---
+#@overlay/match by=overlay.subset({"name": "headlamp"})
+---
+helm:
+  values:
+    #! Service configuration for on-prem
+    #! Use NodePort for basic setups, LoadBalancer with MetalLB for production
+    #@overlay/match missing_ok=True
+    service:
+      type: NodePort  #! Default to NodePort for on-prem clusters
+      #! TODO: Uncomment if using MetalLB LoadBalancer
+      #! type: LoadBalancer
+      #! annotations:
+      #!   metallb.universe.tf/address-pool: default

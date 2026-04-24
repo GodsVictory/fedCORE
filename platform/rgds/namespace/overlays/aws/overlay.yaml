@@ -1,0 +1,90 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! AWS-specific namespace resources
+#! Adds EKS access entry creation for namespaces with AWS account IDs
+
+#@ def ack_eks_controller_enabled():
+#@   for component in data.values.components:
+#@     if component.name == "ack-eks-controller" and component.enabled:
+#@       return True
+#@     end
+#@   end
+#@   return False
+#@ end
+
+#@overlay/match by=overlay.subset({"kind": "ResourceGraphDefinition"})
+---
+spec:
+  #! Add AWS-specific schema fields
+  #@overlay/match missing_ok=True
+  schema:
+    #@overlay/match missing_ok=True
+    spec:
+      #@overlay/match missing_ok=True
+      #! AWS account ID for access entry creation (optional)
+      #! Used to construct IAM role ARNs in roleBindings with createAccessEntry=true
+      aws:
+        #! AWS account ID (12-digit number)
+        accountId: string
+
+    #! Extend RoleBinding type with AWS-specific fields
+    #@overlay/match missing_ok=True
+    types:
+      #@overlay/match missing_ok=True
+      RoleBinding:
+        #! Create an EKS AccessEntry for this binding (AWS-specific, optional)
+        #! When true, creates an AccessEntry mapping IAM role to this K8s group
+        #! Requires: kind=Group, iamRoleName specified, aws.accountId at namespace level
+        #@overlay/match missing_ok=True
+        createAccessEntry: boolean | default=false
+
+        #! IAM role name to map to this group (AWS-specific, optional)
+        #! Used when createAccessEntry=true
+        #! The IAM role ARN: arn:aws:iam::{accountId}:role/{iamRoleName}
+        #! AccessEntry resource name: {namespace-name}-{iamRoleName}
+        #@overlay/match missing_ok=True
+        iamRoleName: string | optional
+
+  #@overlay/match missing_ok=True
+  resources:
+    #! ═══════════════════════════════════════════════════════════════════════
+    #! EKS ACCESS ENTRIES: Map IAM Roles to Kubernetes Groups
+    #! ═══════════════════════════════════════════════════════════════════════
+    #! Creates EKS access entries for roleBindings with createAccessEntry=true.
+    #! Each access entry maps an IAM role to a Kubernetes group.
+    #!
+    #! Prerequisites:
+    #! - ACK EKS controller must be installed
+    #! - spec.aws.accountId must be set
+    #! - roleBinding must have: kind=Group, createAccessEntry=true, iamRoleName specified
+    #!
+    #! Access entries from roleBindings with createAccessEntry=true
+    #! Only included if ack-eks-controller component is enabled
+    #@ if ack_eks_controller_enabled():
+    #@overlay/append
+    - id: roleBindingAccessEntries
+      includeWhen:
+        - ${has(binding.createAccessEntry) && binding.createAccessEntry && binding.kind == "Group" && has(binding.iamRoleName)}
+      forEach:
+        - binding: ${schema.spec.roleBindings}
+      template:
+        apiVersion: eks.services.k8s.aws/v1alpha1
+        kind: AccessEntry
+        metadata:
+          #! Name format: {namespace-name}-{iamRoleName}
+          name: ${schema.metadata.name}-${binding.iamRoleName}
+          namespace: ack-system
+          labels:
+            platform.fedcore.io/namespace: ${schema.metadata.name}
+            platform.fedcore.io/cluster: #@ data.values.cluster_name
+            platform.fedcore.io/managed-by: kro
+        spec:
+          clusterName: #@ data.values.cluster_name
+          #! Maps IAM role from roleBinding
+          principalARN: #@ "arn:aws:iam::" + "${schema.spec.aws.accountId}:role/${binding.iamRoleName}"
+          #! To Kubernetes group (from binding.name)
+          kubernetesGroups:
+            - ${binding.name}
+          type: STANDARD
+    #@ end

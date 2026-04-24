@@ -1,0 +1,34 @@
+#@ load("@ytt:data", "data")
+
+#! Headlamp VirtualService for Istio Gateway routing
+#!
+#! Uses TLS Passthrough - routes encrypted traffic via SNI matching
+#! Routes to headlamp pods where TLS is terminated
+
+#@ def istio_gateway_configured():
+#@   return hasattr(data.values, "istio_gateway") and data.values.istio_gateway != None and len(data.values.istio_gateway.namespace) > 0
+#@ end
+
+#@ if istio_gateway_configured():
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: headlamp
+  namespace: headlamp
+spec:
+  hosts:
+  - #@ "ui.headlamp." + data.values.ingress_domain
+  gateways:
+  - headlamp/headlamp-gateway
+  tls:
+  - match:
+    - port: 8443
+      sniHosts:
+      - #@ "ui.headlamp." + data.values.ingress_domain
+    route:
+    - destination:
+        host: headlamp.headlamp.svc.cluster.local
+        port:
+          number: 80
+#@ end

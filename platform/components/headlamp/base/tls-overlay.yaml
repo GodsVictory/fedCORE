@@ -1,0 +1,38 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! Headlamp TLS configuration overlay
+#!
+#! Configures headlamp to terminate TLS using cert-manager certificate
+#! Mounts TLS secret and configures certificate paths
+
+#@ def istio_gateway_configured():
+#@   return hasattr(data.values, "istio_gateway") and data.values.istio_gateway != None and len(data.values.istio_gateway.namespace) > 0
+#@ end
+
+#@ if istio_gateway_configured():
+#@overlay/match by=overlay.subset({"kind": "Deployment", "metadata": {"name": "headlamp"}})
+---
+spec:
+  template:
+    spec:
+      #@overlay/match missing_ok=True
+      volumes:
+      #@overlay/append
+      - name: headlamp-tls
+        secret:
+          secretName: headlamp-tls
+          items:
+          - key: tls.crt
+            path: tls.crt
+          - key: tls.key
+            path: tls.key
+      containers:
+      #@overlay/match by=overlay.subset({"name": "headlamp"})
+      #@overlay/match-child-defaults missing_ok=True
+      - volumeMounts:
+        #@overlay/append
+        - name: headlamp-tls
+          mountPath: /headlamp-cert
+          readOnly: true
+#@ end
