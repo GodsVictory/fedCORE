@@ -1,0 +1,487 @@
+#@ load("@ytt:data", "data")
+
+---
+#! KRO ResourceGraphDefinition for Tenant Onboarding
+#!
+#! Creates everything needed for automated tenant onboarding:
+#! - Capsule Tenant (namespace isolation + quotas)
+#! - CI/CD namespace
+#! - ServiceAccount with Pod Identity (AWS) or Workload Identity (Azure) annotations
+#! - IAM Role (AWS) or Managed Identity (Azure)
+#! - RBAC for cross-namespace deployments
+
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: tenant.platform.fedcore.io
+  labels:
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+spec:
+  schema:
+    apiVersion: v1alpha1
+    group: platform.fedcore.io
+    kind: TenantOnboarding
+    spec:
+      #! DNS-compliant tenant identifier (lowercase alphanumeric with hyphens)
+      #! Pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+      #! Length: 1-30 characters (to keep IAM role ARN under limits)
+      tenantName: string
+
+      #! At least one owner required (User, Group, or ServiceAccount)
+      owners:
+        - kind: string  #! Must be: User, Group, or ServiceAccount
+          name: string  #! Required, min 1 character
+          apiGroup: string | optional
+
+      quotas:
+        #! Maximum namespaces this tenant can create (range: 1-100)
+        namespaces: integer
+
+        #! Total CPU quota in cores (e.g., '100' or '50')
+        #! Pattern: ^[0-9]+([0-9]*)?$
+        cpu: string
+
+        #! Total memory quota (e.g., '200Gi')
+        #! Pattern: ^[0-9]+(Mi|Gi|Ti)$
+        memory: string
+
+        #! Total storage quota (e.g., '1Ti')
+        #! Pattern: ^[0-9]+(Mi|Gi|Ti|Pi)$
+        storage: string
+
+        #! Maximum PersistentVolumeClaims (range: 1-1000)
+        maxPVCs: integer
+
+      billing:
+        #! Cost center code (e.g., 'CC12345')
+        #! Pattern: ^[A-Z0-9]{4,10}$
+        costCenter: string
+
+        #! Billing contact email (must be valid email format)
+        contact: string
+
+      settings:
+        #! Changed default to false for security
+        #! LoadBalancer services require approval annotation
+        allowLoadBalancer: boolean | default=false
+
+        #! Allow tenant pods to access external internet
+        #! Set to false for air-gapped or highly restricted environments
+        allowInternetEgress: boolean | default=true
+
+        #! Istio service mesh configuration (optional)
+        istio:
+          #! Enable automatic sidecar injection for tenant namespaces
+          #! When enabled, all pods get Envoy proxy sidecars for mTLS
+          enabled: boolean | default=false
+
+          #! Strict mTLS enforcement (STRICT mode)
+          #! When true, only mTLS connections allowed (no plaintext)
+          #! When false, uses PERMISSIVE mode (allows gradual migration)
+          strictMTLS: boolean | default=true
+
+        #! Per-namespace resource quotas (in addition to tenant-level aggregate quotas)
+        #! Prevents a single namespace from consuming all tenant resources
+        namespaceResourceQuota:
+          #! CPU quota per namespace (e.g., '10' = 10 cores max per namespace)
+          cpu: string | default="10"
+          #! Memory quota per namespace (e.g., '20Gi')
+          memory: string | default="20Gi"
+          #! Max pods per namespace
+          maxPods: integer | default=50
+          #! Max services per namespace
+          maxServices: integer | default=10
+          #! Max PVCs per namespace
+          maxPVCs: integer | default=10
+
+        #! Default CPU limit per container
+        #! Pattern: ^[0-9]+(m|[0-9]*)?$
+        defaultCPULimit: string | default="500m"
+
+        #! Default memory limit per container
+        #! Pattern: ^[0-9]+(Mi|Gi)$
+        defaultMemoryLimit: string | default="512Mi"
+
+  resources:
+    #! Common resources (all clouds)
+    - id: capsuleTenant
+      template:
+        apiVersion: capsule.clastix.io/v1beta2
+        kind: Tenant
+        metadata:
+          name: ${schema.spec.tenantName}
+          labels:
+            platform.fedcore.io/tenant: ${schema.spec.tenantName}
+            platform.fedcore.io/cluster: #@ data.values.cluster_name
+            #! Billing metadata for Splunk cost allocation dashboards
+            platform.fedcore.io/cost-center: ${schema.spec.billing.costCenter}
+          annotations:
+            #! Billing contact for alerting and reporting
+            platform.fedcore.io/billing-contact: ${schema.spec.billing.contact}
+        spec:
+          owners: ${schema.spec.owners}
+          #! Grant deployer ServiceAccount least-privilege access to all tenant namespaces
+          additionalRoleBindings:
+            - clusterRoleName: ${tenantNamespaceDeployerRole.metadata.name}
+              subjects:
+                - kind: ServiceAccount
+                  name: ${schema.spec.tenantName}-deployer
+                  namespace: ${schema.spec.tenantName}-cicd
+          namespaceOptions:
+            quota: ${schema.spec.quotas.namespaces}
+            #! Add Istio injection label to all tenant namespaces if enabled
+            #! This triggers automatic Envoy sidecar injection
+            additionalMetadata:
+              labels:
+                istio-injection: "${ schema.spec.settings.istio.enabled ? 'enabled' : 'disabled' }"
+
+          #! Tenant-level aggregate resource quotas (total across all namespaces)
+          resourceQuotas:
+            scope: Tenant
+            items:
+              - hard:
+                  limits.cpu: ${schema.spec.quotas.cpu}
+                  limits.memory: ${schema.spec.quotas.memory}
+                  persistentvolumeclaims: ${schema.spec.quotas.maxPVCs}
+                  requests.storage: ${schema.spec.quotas.storage}
+
+          #! Per-namespace resource quotas (applied to each namespace individually)
+          #! Prevents a single namespace from consuming all tenant resources
+          #! These work in conjunction with tenant-level quotas
+          #! Note: Capsule doesn't support per-namespace quotas natively via spec
+          #! We still need Kyverno to generate these, but document intent here
+          #! TODO: Evaluate if Capsule's tenant-level quotas + LimitRanges are sufficient
+          #! perNamespaceResourceQuota:
+          #!   - hard:
+          #!       requests.cpu: ${schema.spec.settings.namespaceResourceQuota.cpu}
+          #!       requests.memory: ${schema.spec.settings.namespaceResourceQuota.memory}
+          #!       limits.cpu: ${schema.spec.settings.namespaceResourceQuota.cpu}
+          #!       limits.memory: ${schema.spec.settings.namespaceResourceQuota.memory}
+          #!       pods: ${schema.spec.settings.namespaceResourceQuota.maxPods}
+          #!       services: ${schema.spec.settings.namespaceResourceQuota.maxServices}
+          #!       persistentvolumeclaims: ${schema.spec.settings.namespaceResourceQuota.maxPVCs}
+
+          #! Default LimitRanges applied to each tenant namespace
+          #! Sets container defaults, mins, and maxes
+          limitRanges:
+            items:
+              - limits:
+                  - type: Container
+                    default:
+                      cpu: ${schema.spec.settings.defaultCPULimit}
+                      memory: ${schema.spec.settings.defaultMemoryLimit}
+                    defaultRequest:
+                      cpu: "100m"
+                      memory: "128Mi"
+                    max:
+                      cpu: "4"
+                      memory: "8Gi"
+                    min:
+                      cpu: "10m"
+                      memory: "16Mi"
+                  - type: PersistentVolumeClaim
+                    max:
+                      storage: "100Gi"
+                    min:
+                      storage: "1Gi"
+
+          #! Network Policies automatically applied to all tenant namespaces
+          #! Replaces Kyverno generate policies for network isolation
+          #! Reference: https://projectcapsule.github.io/capsule/0.7/guides/network-policies/
+          networkPolicies:
+            items:
+              #! Policy 1: Default Deny All Ingress
+              #! Blocks all incoming traffic by default (defense-in-depth)
+              - policyTypes:
+                  - Ingress
+                podSelector: {}
+                ingress: []
+
+              #! Policy 2: Allow Same-Tenant Communication
+              #! Permits pods to communicate within the same tenant's namespaces
+              - policyTypes:
+                  - Ingress
+                podSelector: {}
+                ingress:
+                  - from:
+                      - namespaceSelector:
+                          matchLabels:
+                            capsule.clastix.io/tenant: ${schema.spec.tenantName}
+
+              #! Policy 3: Allow DNS Access
+              #! Permits egress to CoreDNS for name resolution
+              - policyTypes:
+                  - Egress
+                podSelector: {}
+                egress:
+                  - to:
+                      - namespaceSelector:
+                          matchLabels:
+                            kubernetes.io/metadata.name: kube-system
+                        podSelector:
+                          matchLabels:
+                            k8s-app: kube-dns
+                    ports:
+                      - protocol: UDP
+                        port: 53
+                      - protocol: TCP
+                        port: 53
+
+              #! Policy 4: Allow AppDynamics Controller Access
+              #! Always permit egress to AppDynamics for observability
+              #! This is independent of allowInternetEgress setting
+              #! IP ranges are configured per-cluster via data.values.appdynamics.ip_ranges
+              - policyTypes:
+                  - Egress
+                podSelector: {}
+                egress:
+                  #! Allow HTTPS to AppDynamics Controller (specific IP ranges)
+                  #! IP ranges are configured via data.values and can vary by cloud/region
+                  #@ for ip_range in data.values.appdynamics.ip_ranges:
+                  - to:
+                      - ipBlock:
+                          cidr: #@ ip_range
+                    ports:
+                      - protocol: TCP
+                        port: 443  #! HTTPS for SaaS
+                  #@ end
+
+                  #! For On-Premises Controller (uncomment and configure if applicable)
+                  #! - to:
+                  #!     - ipBlock:
+                  #!         cidr: 10.50.100.0/24  #! Example: Your on-prem controller subnet
+                  #!   ports:
+                  #!     - protocol: TCP
+                  #!       port: 8090  #! HTTP for on-prem
+                  #!     - protocol: TCP
+                  #!       port: 8181  #! HTTPS for on-prem
+
+                  #! Allow DNS resolution for AppDynamics endpoints
+                  - to:
+                      - namespaceSelector:
+                          matchLabels:
+                            kubernetes.io/metadata.name: kube-system
+                        podSelector:
+                          matchLabels:
+                            k8s-app: kube-dns
+                    ports:
+                      - protocol: UDP
+                        port: 53
+                      - protocol: TCP
+                        port: 53
+
+              #! Policy 5: Internet egress is now conditionally created as a separate resource
+              #! See internetEgressNetworkPolicy resource below
+
+    - id: cicdNamespace
+      template:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: ${schema.spec.tenantName}-cicd
+          labels:
+            platform.fedcore.io/tenant: ${schema.spec.tenantName}
+            #! References capsuleTenant output to create a kro DAG edge, ensuring the
+            #! Capsule Tenant is ready before this namespace is created. This guarantees
+            #! Capsule adopts the namespace and propagates additionalRoleBindings immediately.
+            capsule.clastix.io/tenant: ${capsuleTenant.metadata.name}
+            #! Billing metadata for cost allocation in Splunk dashboards
+            platform.fedcore.io/cost-center: ${schema.spec.billing.costCenter}
+            #! Istio injection label (enabled/disabled based on tenant settings)
+            istio-injection: "${ schema.spec.settings.istio.enabled ? 'enabled' : 'disabled' }"
+
+    - id: deploymentServiceAccount
+      template:
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: ${schema.spec.tenantName}-deployer
+          namespace: ${cicdNamespace.metadata.name}
+
+    - id: tenantClusterRole
+      template:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRole
+        metadata:
+          name: ${schema.spec.tenantName}-deployer-cluster
+        rules:
+          #! Read-only access to cluster-scoped resources for discovery
+          #! Note: Namespace creation is handled by Capsule-native provisioning
+          #! Tenants use standard kubectl to create namespaces with tenant prefix
+          - apiGroups: [""]
+            resources: ["nodes", "persistentvolumes", "namespaces"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: ["storage.k8s.io"]
+            resources: ["storageclasses"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: ["apiextensions.k8s.io"]
+            resources: ["customresourcedefinitions"]
+            verbs: ["get", "list", "watch"]
+
+    - id: tenantClusterRoleBinding
+      template:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        metadata:
+          name: ${schema.spec.tenantName}-deployer
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: ClusterRole
+          name: ${tenantClusterRole.metadata.name}
+        subjects:
+          - kind: ServiceAccount
+            name: ${deploymentServiceAccount.metadata.name}
+            namespace: ${cicdNamespace.metadata.name}
+
+    #! Custom ClusterRole for tenant namespace deployments (replaces overly permissive 'admin' role)
+    - id: tenantNamespaceDeployerRole
+      template:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRole
+        metadata:
+          name: ${schema.spec.tenantName}-namespace-deployer
+        rules:
+          #! Workload management - full control
+          - apiGroups: ["apps"]
+            resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+          #! Core resources - full control
+          - apiGroups: [""]
+            resources: ["services", "endpoints", "persistentvolumeclaims", "configmaps", "pods"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+          #! Secrets - READ ONLY (cannot create or modify secrets)
+          - apiGroups: [""]
+            resources: ["secrets"]
+            verbs: ["get", "list"]
+
+          #! Networking - full control
+          - apiGroups: ["networking.k8s.io"]
+            resources: ["ingresses", "networkpolicies"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+          #! Batch jobs - full control
+          - apiGroups: ["batch"]
+            resources: ["jobs", "cronjobs"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+          #! Autoscaling - full control
+          - apiGroups: ["autoscaling"]
+            resources: ["horizontalpodautoscalers"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+          #! Policy - full control
+          - apiGroups: ["policy"]
+            resources: ["poddisruptionbudgets"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+          #! Pod operations - for debugging (logs, exec)
+          - apiGroups: [""]
+            resources: ["pods/log", "pods/status"]
+            verbs: ["get", "list"]
+          - apiGroups: [""]
+            resources: ["pods/exec"]
+            verbs: ["create"]
+
+          #! Istio resources - allow tenants to manage their own service mesh policies
+          - apiGroups: ["security.istio.io"]
+            resources: ["authorizationpolicies", "peerauthentications"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          - apiGroups: ["networking.istio.io"]
+            resources: ["destinationrules", "virtualservices", "serviceentries"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+    #! Istio mTLS Configuration (created only if Istio is enabled)
+    #! This resource enforces tenant-level PeerAuthentication policy
+    - id: istioPeerAuthentication
+      includeWhen:
+        - ${schema.spec.settings.istio.enabled}
+      template:
+        apiVersion: security.istio.io/v1beta1
+        kind: PeerAuthentication
+        metadata:
+          name: ${schema.spec.tenantName}-mtls
+          namespace: ${cicdNamespace.metadata.name}
+          labels:
+            platform.fedcore.io/tenant: ${schema.spec.tenantName}
+            platform.fedcore.io/cluster: #@ data.values.cluster_name
+        spec:
+          #! Apply to all workloads in tenant namespaces
+          #! Note: This is created in the cicd namespace but can be scoped to match tenant workloads
+          selector: {}
+          mtls:
+            #! Mode is controlled by tenant setting: STRICT or PERMISSIVE
+            mode: "${ schema.spec.settings.istio.strictMTLS ? 'STRICT' : 'PERMISSIVE' }"
+
+    #! Istio AuthorizationPolicy - Allow intra-tenant traffic
+    #! This policy ensures tenant isolation at Layer 7 (service mesh level)
+    - id: istioAuthorizationPolicy
+      includeWhen:
+        - ${schema.spec.settings.istio.enabled}
+      template:
+        apiVersion: security.istio.io/v1beta1
+        kind: AuthorizationPolicy
+        metadata:
+          name: ${schema.spec.tenantName}-allow-intra-tenant
+          namespace: ${cicdNamespace.metadata.name}
+          labels:
+            platform.fedcore.io/tenant: ${schema.spec.tenantName}
+            platform.fedcore.io/cluster: #@ data.values.cluster_name
+        spec:
+          #! This policy applies to all tenant workloads
+          selector:
+            matchLabels:
+              istio.io/tenant: ${schema.spec.tenantName}
+          action: ALLOW
+          rules:
+          #! Allow traffic from same tenant namespaces only
+          - from:
+            - source:
+                namespaces: ["${schema.spec.tenantName}-*"]
+            #! Allow traffic from istio-system (for ingress gateway, telemetry)
+            - source:
+                namespaces: ["istio-system"]
+
+    #! Kyverno Policy to generate internet egress NetworkPolicy (conditional)
+    #! This generates the policy in all tenant namespaces when allowInternetEgress is true
+    - id: internetEgressPolicyGenerator
+      includeWhen:
+        - ${schema.spec.settings.allowInternetEgress}
+      template:
+        apiVersion: kyverno.io/v1
+        kind: ClusterPolicy
+        metadata:
+          name: ${schema.spec.tenantName}-generate-internet-egress
+          labels:
+            platform.fedcore.io/tenant: ${schema.spec.tenantName}
+            platform.fedcore.io/cluster: #@ data.values.cluster_name
+        spec:
+          generateExistingOnPolicyUpdate: true
+          rules:
+            - name: generate-internet-egress-policy
+              match:
+                any:
+                  - resources:
+                      kinds:
+                        - Namespace
+                      selector:
+                        matchLabels:
+                          capsule.clastix.io/tenant: ${schema.spec.tenantName}
+              generate:
+                apiVersion: networking.k8s.io/v1
+                kind: NetworkPolicy
+                name: allow-internet-egress
+                namespace: "{{request.object.metadata.name}}"
+                synchronize: true
+                data:
+                  spec:
+                    policyTypes:
+                      - Egress
+                    podSelector: {}
+                    egress:
+                      - to:
+                          - ipBlock:
+                              cidr: 0.0.0.0/0
+                              #! Exclude private networks - configurable per cloud provider
+                              except: #@ data.values.network.private_cidrs

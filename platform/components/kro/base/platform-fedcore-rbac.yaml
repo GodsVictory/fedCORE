@@ -1,0 +1,35 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kro:platform-fedcore-resources
+  labels:
+    rbac.kro.run/aggregate-to-controller: "true"
+    app.kubernetes.io/name: kro
+    app.kubernetes.io/component: rbac
+    platform.fedcore.io/managed: "true"
+  annotations:
+    kubernetes.io/description: |
+      Grants kro controller access to all custom resources in the platform.fedcore.io API group.
+      This ClusterRole is automatically aggregated into the main kro:controller ClusterRole.
+rules:
+- apiGroups: ["platform.fedcore.io"]
+  resources: ["*"]
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups: ["platform.fedcore.io"]
+  resources: ["*/status"]
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups: ["platform.fedcore.io"]
+  resources: ["*/finalizers"]
+  verbs:
+  - update

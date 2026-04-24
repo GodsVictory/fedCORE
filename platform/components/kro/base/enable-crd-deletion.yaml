@@ -1,0 +1,17 @@
+#@ load("@ytt:overlay", "overlay")
+
+#! overlay-phase: post-render
+
+#! Enable CRD deletion for kro controller
+#! This allows kro to automatically clean up CRDs when ResourceGraphDefinitions are deleted
+
+#@overlay/match by=overlay.subset({"kind": "Deployment", "metadata": {"name": "kro", "namespace": "kro-system"}})
+---
+spec:
+  template:
+    spec:
+      containers:
+        #@overlay/match by=overlay.subset({"name": "kro"})
+        - args:
+            #@overlay/append
+            - --allow-crd-deletion

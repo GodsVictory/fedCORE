@@ -1,0 +1,12 @@
+---
+#! Example 1: Simple namespace with no service account or role bindings
+#! Just creates an empty namespace with metadata
+apiVersion: platform.fedcore.io/v1alpha1
+kind: NamespaceProvisioning
+metadata:
+  name: my-app-dev
+spec:
+  metadata:
+    environment: dev
+    team: platform
+    description: "Development namespace for my-app"

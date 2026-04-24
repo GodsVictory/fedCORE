@@ -1,0 +1,24 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kro:default-clusterroles
+  labels:
+    rbac.kro.run/aggregate-to-controller: "true"
+    app.kubernetes.io/name: kro
+    app.kubernetes.io/component: rbac
+    platform.fedcore.io/managed: "true"
+  annotations:
+    kubernetes.io/description: |
+      Grants kro controller permission to bind the default Kubernetes ClusterRoles
+      (admin, edit, view) to service accounts in RoleBindings.
+
+      Without this, kro cannot create RoleBindings that grant these roles due to
+      Kubernetes RBAC privilege escalation prevention.
+rules:
+# Allow binding admin, edit, and view ClusterRoles in RoleBindings
+# This uses the resourceNames field to limit escalation only to these specific roles
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["clusterroles"]
+  resourceNames: ["admin", "edit", "view"]
+  verbs: ["bind"]

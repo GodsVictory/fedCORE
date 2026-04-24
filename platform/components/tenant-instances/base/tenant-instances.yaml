@@ -1,0 +1,149 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:assert", "assert")
+
+#! Generate TenantOnboarding or NamespaceProvisioning CRs from cluster tenants configuration
+#! This template is processed during build time to create an OCI artifact
+#! containing all tenant/namespace instances for a specific cluster.
+#!
+#! The generated artifact is deployed by Flux with dependencies on the
+#! tenant and namespace RGD components, ensuring the CRDs exist before
+#! these instances are applied.
+
+#! Create the tenant instance namespace (if configured)
+#@ tenant_ns = data.values.tenant_instance_namespace if hasattr(data.values, "tenant_instance_namespace") and data.values.tenant_instance_namespace else "tenant-system"
+#@ create_ns = data.values.create_tenant_instance_namespace if hasattr(data.values, "create_tenant_instance_namespace") and data.values.create_tenant_instance_namespace != None else True
+
+#@ if create_ns:
+---
+#! Namespace for tenant/namespace CR instances
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: #@ tenant_ns
+  labels:
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+    platform.fedcore.io/managed-by: flux
+#@ end
+
+#@ if hasattr(data.values, "tenants") and data.values.tenants:
+#@   for tenant in data.values.tenants:
+#@     tenant_type = tenant.type if hasattr(tenant, "type") and tenant.type else "tenant"
+#@     if tenant_type == "tenant":
+---
+#! Full Capsule Tenant with multi-namespace support and quotas
+apiVersion: platform.fedcore.io/v1alpha1
+kind: TenantOnboarding
+metadata:
+  name: #@ tenant.name
+  namespace: #@ tenant_ns
+  labels:
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+    platform.fedcore.io/managed-by: flux
+spec:
+  tenantName: #@ tenant.name
+
+  #! Tenant owners (required)
+  owners: #@ tenant.owners
+
+  #! AWS account information (if specified)
+  #@ if hasattr(tenant, "aws_account_id") and tenant.aws_account_id:
+  aws:
+    accountId: #@ tenant.aws_account_id
+  #@ end
+
+  #! Resource quotas
+  quotas:
+    namespaces: #@ tenant.namespace_quota
+    cpu: #@ tenant.resources.cpu
+    memory: #@ tenant.resources.memory
+    storage: #@ tenant.resources.storage
+    maxPVCs: #@ tenant.resources.max_pvcs
+
+  #! Billing information
+  billing:
+    costCenter: #@ tenant.cost_center if hasattr(tenant, "cost_center") and tenant.cost_center else "unknown"
+    contact: #@ tenant.billing_contact if hasattr(tenant, "billing_contact") and tenant.billing_contact else ""
+
+  #! Tenant settings
+  settings:
+    allowLoadBalancer: #@ tenant.allow_loadbalancer if hasattr(tenant, "allow_loadbalancer") else False
+    allowInternetEgress: #@ data.values.tenant_policies.allow_internet_egress
+
+    #! Istio configuration (if tenant has istio settings)
+    #@ if hasattr(tenant, "istio"):
+    istio:
+      enabled: #@ tenant.istio.enabled if hasattr(tenant.istio, "enabled") else False
+      strictMTLS: #@ tenant.istio.strict_mtls if hasattr(tenant.istio, "strict_mtls") else True
+    #@ else:
+    istio:
+      enabled: false
+      strictMTLS: true
+    #@ end
+
+    #! Per-namespace resource quotas
+    namespaceResourceQuota:
+      cpu: #@ data.values.tenant_policies.default_namespace_cpu_quota
+      memory: #@ data.values.tenant_policies.default_namespace_memory_quota
+      maxPods: 50
+      maxServices: 10
+      maxPVCs: 10
+
+    #! Default limits (use tenant-specific or cluster defaults)
+    defaultCPULimit: #@ tenant.default_cpu_limit if hasattr(tenant, "default_cpu_limit") and tenant.default_cpu_limit else "500m"
+    defaultMemoryLimit: #@ tenant.default_memory_limit if hasattr(tenant, "default_memory_limit") and tenant.default_memory_limit else "512Mi"
+    defaultCPURequest: #@ tenant.default_cpu_request if hasattr(tenant, "default_cpu_request") and tenant.default_cpu_request else "100m"
+    defaultMemoryRequest: #@ tenant.default_memory_request if hasattr(tenant, "default_memory_request") and tenant.default_memory_request else "128Mi"
+#@     elif tenant_type == "namespace":
+---
+#! Simple Namespace Provisioning with ServiceAccount and RBAC
+apiVersion: platform.fedcore.io/v1alpha1
+kind: NamespaceProvisioning
+metadata:
+  name: #@ tenant.name
+  namespace: #@ tenant_ns
+  labels:
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+    platform.fedcore.io/managed-by: flux
+spec:
+  #! Namespace name comes from metadata.name (must be DNS-compliant)
+  #! Pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$, Length: 1-63 characters
+
+  #! Metadata for organization and billing (all fields optional)
+  #@ if hasattr(data.values, "environment") or hasattr(tenant, "cost_center") or hasattr(tenant, "description") or (hasattr(tenant, "owners") and tenant.owners):
+  metadata:
+    #@ if hasattr(data.values, "environment") and data.values.environment:
+    environment: #@ data.values.environment
+    #@ end
+    #@ if hasattr(tenant, "team") and tenant.team:
+    team: #@ tenant.team
+    #@ end
+    #@ if hasattr(tenant, "cost_center") and tenant.cost_center:
+    costCenter: #@ tenant.cost_center
+    #@ end
+    #@ if hasattr(tenant, "description") and tenant.description:
+    description: #@ tenant.description
+    #@ end
+    #@ if hasattr(tenant, "owners") and tenant.owners:
+    owner: #@ tenant.owners[0].name
+    #@ end
+  #@ end
+
+  #! Create a service account named "admin" with admin access (default: true)
+  #! Only override if explicitly set in config
+  #@ if hasattr(tenant, "create_service_account") and tenant.create_service_account != None:
+  createServiceAccount: #@ tenant.create_service_account
+  #@ end
+
+  #! AWS account information (if specified, for IAM role ARN construction)
+  #@ if hasattr(tenant, "aws_account_id") and tenant.aws_account_id:
+  aws:
+    accountId: #@ tenant.aws_account_id
+  #@ end
+
+  #! Optional: Grant access to other service accounts
+  #@ if hasattr(tenant, "role_bindings") and tenant.role_bindings:
+  roleBindings: #@ tenant.role_bindings
+  #@ end
+#@     end
+#@   end
+#@ end

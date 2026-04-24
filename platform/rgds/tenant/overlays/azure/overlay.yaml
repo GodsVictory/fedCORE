@@ -1,0 +1,50 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#@overlay/match by=overlay.subset({"kind": "ResourceGraphDefinition"})
+---
+spec:
+  #@overlay/match missing_ok=True
+  resources:
+    #! Patch ServiceAccount to add Workload Identity annotations
+    #@overlay/match by="id"
+    - id: deploymentServiceAccount
+      template:
+        metadata:
+          #@overlay/match missing_ok=True
+          annotations:
+            #@overlay/match missing_ok=True
+            azure.workload.identity/client-id: ${azureManagedIdentity.status.clientId}
+            #@overlay/match missing_ok=True
+            azure.workload.identity/tenant-id: #@ data.values.azure.tenant_id
+
+    #! Add Azure Managed Identity
+    #@overlay/append
+    - id: azureManagedIdentity
+      template:
+        apiVersion: managedidentity.azure.com/v1api20230131
+        kind: UserAssignedIdentity
+        metadata:
+          name: ${schema.spec.tenantName}-deployer
+          namespace: ${cicdNamespace.metadata.name}
+        spec:
+          location: #@ data.values.azure.region
+          owner:
+            name: #@ data.values.azure.resource_group
+
+    #! Add Federated Identity Credential for Workload Identity
+    #@overlay/append
+    - id: azureFederatedCredential
+      template:
+        apiVersion: managedidentity.azure.com/v1api20230131
+        kind: FederatedIdentityCredential
+        metadata:
+          name: ${schema.spec.tenantName}-deployer
+          namespace: ${cicdNamespace.metadata.name}
+        spec:
+          owner:
+            name: ${azureManagedIdentity.metadata.name}
+          audiences:
+            - api://AzureADTokenExchange
+          issuer: #@ data.values.azure.oidc_issuer
+          subject: system:serviceaccount:${cicdNamespace.metadata.name}:${deploymentServiceAccount.metadata.name}

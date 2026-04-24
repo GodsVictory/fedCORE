@@ -1,0 +1,38 @@
+#@ load("@ytt:data", "data")
+
+#! Headlamp TLS Certificate
+#!
+#! cert-manager automatically provisions and renews TLS certificate
+#! Certificate and secret are in headlamp namespace for TLS passthrough
+
+#@ def istio_gateway_configured():
+#@   return hasattr(data.values, "istio_gateway") and data.values.istio_gateway != None and len(data.values.istio_gateway.namespace) > 0
+#@ end
+
+#@ if istio_gateway_configured():
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: headlamp-tls
+  namespace: headlamp
+  labels:
+    app.kubernetes.io/name: headlamp
+    app.kubernetes.io/managed-by: fedcore
+    app.kubernetes.io/component: platform-certificate
+spec:
+  commonName: #@ "ui.headlamp." + data.values.ingress_domain
+  dnsNames:
+  - #@ "ui.headlamp." + data.values.ingress_domain
+  duration: 2160h
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: platform-ca-issuer
+  privateKey:
+    algorithm: RSA
+    encoding: PKCS8
+    size: 2048
+  renewBefore: 360h
+  secretName: headlamp-tls
+#@ end
