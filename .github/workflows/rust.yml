@@ -1,0 +1,79 @@
+name: Continuous Build
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------
+  # JOB 1: Build binaries for both Windows and Linux
+  # ---------------------------------------------------
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary_name: fedcore          # IMPORTANT: Replace with your actual Linux binary name
+            release_name: fedcore-linux   # The name users will see when downloading
+          - os: windows-latest
+            binary_name: fedcore.exe      # IMPORTANT: Replace with your actual Windows binary name
+            release_name: fedcore-windows.exe
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build release binary
+      run: cargo build --release
+      
+    - name: Rename binary for release
+      # Using bash ensures this command works smoothly on both Windows and Linux runners
+      shell: bash
+      run: mv target/release/${{ matrix.binary_name }} target/release/${{ matrix.release_name }}
+      
+    - name: Temporarily save artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.release_name }}
+        path: target/release/${{ matrix.release_name }}
+        retention-days: 1 # Only needed to pass to the release job
+
+  # ---------------------------------------------------
+  # JOB 2: Gather binaries and update the Release page
+  # ---------------------------------------------------
+  nightly-release:
+    name: Publish Nightly Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to push tags and update releases
+      
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download all compiled binaries
+      uses: actions/download-artifact@v4
+      with:
+        path: binaries
+        merge-multiple: true # Puts Windows and Linux files in the same folder
+
+    - name: Update the 'nightly' tag
+      run: |
+        # Move the 'nightly' tag to the latest commit and push it to GitHub
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -f nightly ${{ github.sha }}
+        git push -f origin nightly
+
+    - name: Publish to GitHub Releases
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: nightly
+        name: "Development Build (Nightly)"
+        body: "This release tracks the `main` branch and is automatically rebuilt on every commit. These are unstable development binaries."
+        prerelease: true # Marks it as a pre-release so it doesn't look like your main stable version
+        files: binaries/*
