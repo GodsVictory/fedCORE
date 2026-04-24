@@ -1,0 +1,71 @@
+#@ load("@ytt:data", "data")
+---
+#! Helm chart configuration
+helm:
+  sourceRepo: https://helm.cilium.io/
+  chart: tetragon
+  version: "1.6.0"
+  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "https://helm.cilium.io/"
+
+  #! Release configuration
+  release:
+    name: tetragon
+    namespace: kube-system
+
+  #! Values for helm template
+  values:
+    #! =============================================================================
+    #! Tetragon Agent Configuration (DaemonSet)
+    #! =============================================================================
+    tetragon:
+      #! Prometheus metrics
+      prometheus:
+        enabled: #@ data.values.monitoring.enabled
+        serviceMonitor:
+          enabled: #@ data.values.monitoring.enabled
+          labels:
+            prometheus: kube-prometheus
+
+      #! Export configuration
+      export:
+        #! Export events as JSON to stdout (Fluent Bit will collect)
+        stdout:
+          argsLength: 4096
+
+        #! Event rate limiting (prevent log flooding)
+        rateLimitOptions:
+          enabled: true
+          interval: "1s"
+          rate: 1000  #! Max 1000 events per second per node
+
+      #! Resource limits for DaemonSet
+      resources:
+        limits:
+          cpu: 500m
+          memory: 500Mi
+        requests:
+          cpu: 100m
+          memory: 200Mi
+
+    #! =============================================================================
+    #! Tetragon Operator
+    #! =============================================================================
+    tetragonOperator:
+      resources:
+        limits:
+          cpu: 200m
+          memory: 256Mi
+        requests:
+          cpu: 50m
+          memory: 128Mi
+
+    #! =============================================================================
+    #! Priority Class (ensure Tetragon DaemonSet runs on all nodes)
+    #! =============================================================================
+    priorityClassName: "system-node-critical"
+
+    #! =============================================================================
+    #! ServiceAccount
+    #! =============================================================================
+    serviceAccount:
+      name: tetragon

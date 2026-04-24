@@ -1,0 +1,336 @@
+#@ load("@ytt:data", "data")
+
+#! Kyverno Policy: Best Practices for Tenant Workloads (Audit Mode)
+#!
+#! These policies run in audit mode to report on best practices
+#! without blocking deployments. Use reports for tenant education.
+
+---
+#! Policy 1: Recommend Readiness Probes
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: audit-tenant-readiness-probes
+  annotations:
+    policies.kyverno.io/title: Recommend Readiness Probes
+    policies.kyverno.io/category: Best Practices, Multi-Tenancy
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Readiness probes help Kubernetes determine when a pod is ready
+      to receive traffic, improving reliability.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-readiness-probe
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: "Readiness probe is recommended for better traffic management"
+        foreach:
+          - list: "request.object.spec.containers[]"
+            pattern:
+              readinessProbe:
+                ?*: ?*
+
+---
+#! Policy 2: Recommend Liveness Probes
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: audit-tenant-liveness-probes
+  annotations:
+    policies.kyverno.io/title: Recommend Liveness Probes
+    policies.kyverno.io/category: Best Practices, Multi-Tenancy
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Liveness probes help Kubernetes restart unhealthy pods automatically.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-liveness-probe
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: "Liveness probe is recommended for automatic recovery"
+        foreach:
+          - list: "request.object.spec.containers[]"
+            pattern:
+              livenessProbe:
+                ?*: ?*
+
+---
+#! Policy 3: Recommend Pod Disruption Budgets
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: audit-tenant-pdb
+  annotations:
+    policies.kyverno.io/title: Recommend Pod Disruption Budgets
+    policies.kyverno.io/category: Best Practices, Multi-Tenancy
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Deployment, StatefulSet
+    policies.kyverno.io/description: >-
+      PodDisruptionBudgets protect against voluntary disruptions during
+      cluster maintenance or node drains.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-pdb-exists
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      context:
+        - name: pdbs
+          apiCall:
+            urlPath: "/apis/policy/v1/namespaces/{{ request.namespace }}/poddisruptionbudgets"
+            jmesPath: "items[?spec.selector.matchLabels.app == '{{ request.object.spec.selector.matchLabels.app }}'] | length(@)"
+      validate:
+        message: "Consider creating a PodDisruptionBudget for high availability"
+        deny:
+          conditions:
+            all:
+              #! Deployment has more than 2 replicas
+              - key: "{{ request.object.spec.replicas || 1 }}"
+                operator: GreaterThan
+                value: 2
+              #! But no matching PDB exists
+              - key: "{{ pdbs }}"
+                operator: Equals
+                value: 0
+
+---
+#! Policy 4: Recommend Resource Requests Match Limits
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: audit-tenant-qos-guaranteed
+  annotations:
+    policies.kyverno.io/title: Recommend QoS Guaranteed Class
+    policies.kyverno.io/category: Best Practices, Multi-Tenancy
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      When requests equal limits, pods get QoS class Guaranteed,
+      providing the most predictable performance.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-qos-guaranteed
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: "For best performance, set requests equal to limits for QoS Guaranteed"
+        foreach:
+          - list: "request.object.spec.containers[]"
+            deny:
+              conditions:
+                any:
+                  #! CPU request != CPU limit
+                  - key: "{{ element.resources.requests.cpu || '' }}"
+                    operator: NotEquals
+                    value: "{{ element.resources.limits.cpu || '' }}"
+                  #! Memory request != Memory limit
+                  - key: "{{ element.resources.requests.memory || '' }}"
+                    operator: NotEquals
+                    value: "{{ element.resources.limits.memory || '' }}"
+
+---
+#! Policy 5: Recommend Labels for Organization
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: audit-tenant-recommended-labels
+  annotations:
+    policies.kyverno.io/title: Recommend Standard Labels
+    policies.kyverno.io/category: Best Practices, Multi-Tenancy
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Deployment, StatefulSet, DaemonSet
+    policies.kyverno.io/description: >-
+      Standard labels improve resource organization and make it easier
+      to query and manage workloads.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-recommended-labels
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+                - DaemonSet
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Recommended labels are missing. Consider adding:
+          app.kubernetes.io/name, app.kubernetes.io/version,
+          app.kubernetes.io/component, app.kubernetes.io/part-of
+        pattern:
+          metadata:
+            labels:
+              app.kubernetes.io/name: "?*"
+
+---
+#! Policy 6: Warn About Multiple Containers in Pods
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: audit-tenant-sidecar-pattern
+  annotations:
+    policies.kyverno.io/title: Review Multi-Container Pods
+    policies.kyverno.io/category: Best Practices, Multi-Tenancy
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Multi-container pods should follow sidecar/adapter/ambassador patterns.
+      Ensure containers have a valid reason to be co-located.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-multi-container
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          This pod has multiple containers. Ensure they follow established patterns:
+          sidecar (logging, monitoring), adapter (protocol conversion), or ambassador (proxy).
+          Consider if they truly need to be co-located.
+        deny:
+          conditions:
+            all:
+              #! More than 2 containers (excluding init containers)
+              - key: "{{ request.object.spec.containers | length(@) }}"
+                operator: GreaterThan
+                value: 2
+              #! And no annotation explaining the pattern
+              - key: "{{ request.object.metadata.annotations.\"fedcore.io/multi-container-reason\" || '' }}"
+                operator: Equals
+                value: ""
+
+---
+#! Policy 7: Recommend Horizontal Pod Autoscalers
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: audit-tenant-hpa
+  annotations:
+    policies.kyverno.io/title: Recommend Horizontal Pod Autoscaler
+    policies.kyverno.io/category: Best Practices, Multi-Tenancy
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Deployment
+    policies.kyverno.io/description: >-
+      HPAs automatically scale workloads based on demand, improving
+      efficiency and reliability.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-hpa-exists
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      context:
+        - name: hpas
+          apiCall:
+            urlPath: "/apis/autoscaling/v2/namespaces/{{ request.namespace }}/horizontalpodautoscalers"
+            jmesPath: "items[?spec.scaleTargetRef.name == '{{ request.object.metadata.name }}'] | length(@)"
+      validate:
+        message: "Consider creating an HPA for automatic scaling based on load"
+        deny:
+          conditions:
+            all:
+              #! Deployment exists
+              - key: "{{ request.object.metadata.name }}"
+                operator: NotEquals
+                value: ""
+              #! But no matching HPA exists
+              - key: "{{ hpas }}"
+                operator: Equals
+                value: 0
+
+---
+#! Policy 8: Audit Deprecated API Usage
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: audit-tenant-deprecated-apis
+  annotations:
+    policies.kyverno.io/title: Audit Deprecated API Versions
+    policies.kyverno.io/category: Best Practices, Multi-Tenancy
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Ingress, PodSecurityPolicy
+    policies.kyverno.io/description: >-
+      Warns about usage of deprecated Kubernetes API versions that
+      may be removed in future releases.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-deprecated-ingress
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Ingress apiVersion extensions/v1beta1 and networking.k8s.io/v1beta1
+          are deprecated. Use networking.k8s.io/v1 instead.
+        pattern:
+          apiVersion: networking.k8s.io/v1

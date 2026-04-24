@@ -1,0 +1,321 @@
+#@ load("@ytt:data", "data")
+---
+#! Policy: Validate Ingress Hostname Pattern
+#!
+#! Ensures Ingress hostnames match the cluster's ingress domain
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-ingress-hostname
+  annotations:
+    policies.kyverno.io/title: Validate Ingress Hostname Pattern
+    policies.kyverno.io/category: Networking, Multi-Tenancy
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Validates that Ingress hostnames match the cluster's ingress domain.
+      Prevents typos and ensures DNS consistency.
+spec:
+  validationFailureAction: Audit  #! Audit mode - warn but don't block
+  background: true
+  rules:
+    - name: check-hostname-pattern
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Ingress hostnames should match the cluster ingress domain pattern.
+          Expected: *.{{data.values.ingress_domain}}
+          Actual: {{ request.object.spec.rules[*].host }}
+        pattern:
+          spec:
+            rules:
+              - host: #@ "*." + data.values.ingress_domain + " | *"
+
+---
+#! Policy: Require IngressClassName
+#!
+#! Ensures all Ingress resources specify an ingressClassName
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-ingress-class
+  annotations:
+    policies.kyverno.io/title: Require IngressClassName
+    policies.kyverno.io/category: Networking, Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Requires all Ingress resources to specify an ingressClassName.
+      Prevents ambiguity when multiple ingress controllers are present.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: check-ingress-class
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Ingress must specify spec.ingressClassName.
+          Valid options: 'nginx' (for non-Istio), 'istio' (use VirtualService instead).
+        pattern:
+          spec:
+            ingressClassName: "?*"
+
+---
+#! Policy: Enforce HTTPS Redirect
+#!
+#! Ensures all Ingress resources have HTTPS redirect enabled
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: enforce-ingress-https-redirect
+  annotations:
+    policies.kyverno.io/title: Enforce HTTPS Redirect on Ingress
+    policies.kyverno.io/category: Security, Networking
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Ensures all Ingress resources have HTTPS redirect enabled via annotation.
+      Prevents insecure HTTP-only configurations.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-ssl-redirect
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Ingress must have annotation 'nginx.ingress.kubernetes.io/force-ssl-redirect: "true"'
+          to enforce HTTPS. HTTP-only access is not allowed.
+        pattern:
+          metadata:
+            annotations:
+              nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+---
+#! Policy: Validate TLS Configuration
+#!
+#! Ensures Ingress resources with TLS have proper secret references
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-ingress-tls
+  annotations:
+    policies.kyverno.io/title: Validate Ingress TLS Configuration
+    policies.kyverno.io/category: Security, Networking
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Validates that Ingress resources with TLS configuration have valid
+      secret references and matching hostnames.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: check-tls-secret
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Ingress with TLS configuration must specify secretName.
+          Each TLS entry must have a secretName referencing a kubernetes.io/tls secret.
+        deny:
+          conditions:
+            any:
+              #! If TLS is configured, secretName must be present
+              - key: "{{ request.object.spec.tls[?secretName == ''] | length(@) }}"
+                operator: GreaterThan
+                value: 0
+
+---
+#! Policy: Auto-Label Ingress Resources
+#!
+#! Automatically adds tenant labels to Ingress resources for observability
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: auto-label-ingress-resources
+  annotations:
+    policies.kyverno.io/title: Auto-Label Ingress Resources
+    policies.kyverno.io/category: Observability
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Automatically adds tenant labels to Ingress resources
+      for improved observability in metrics and logs.
+spec:
+  background: false
+  rules:
+    - name: add-tenant-labels
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              #! Add tenant label from namespace
+              +(tenant): "{{ request.namespace.metadata.labels.\"capsule.clastix.io/tenant\" }}"
+              #! Add cluster identifier
+              +(cluster): #@ data.values.cluster_name
+
+---
+#! Policy: Prevent Dangerous Ingress Annotations
+#!
+#! Prevents use of annotations that could bypass security controls
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: prevent-dangerous-ingress-annotations
+  annotations:
+    policies.kyverno.io/title: Prevent Dangerous Ingress Annotations
+    policies.kyverno.io/category: Security, Networking
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Prevents use of nginx ingress annotations that could bypass
+      security controls or cause security issues.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: block-snippet-annotations
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Ingress cannot use configuration-snippet or server-snippet annotations.
+          These allow arbitrary nginx configuration which could bypass security controls.
+        deny:
+          conditions:
+            any:
+              #! Block configuration-snippet
+              - key: "{{ request.object.metadata.annotations.\"nginx.ingress.kubernetes.io/configuration-snippet\" || '' }}"
+                operator: NotEquals
+                value: ""
+              #! Block server-snippet
+              - key: "{{ request.object.metadata.annotations.\"nginx.ingress.kubernetes.io/server-snippet\" || '' }}"
+                operator: NotEquals
+                value: ""
+
+---
+#! Policy: Limit Ingress Path Types
+#!
+#! Ensures tenants use safe path matching types
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-ingress-path-type
+  annotations:
+    policies.kyverno.io/title: Validate Ingress Path Type
+    policies.kyverno.io/category: Networking, Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Validates that Ingress path types are either Prefix or Exact.
+      Prevents use of ImplementationSpecific which can be ambiguous.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: check-path-type
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Ingress pathType must be either 'Prefix' or 'Exact'.
+          'ImplementationSpecific' is not allowed as it can be ambiguous.
+        pattern:
+          spec:
+            rules:
+              - http:
+                  paths:
+                    - pathType: "Prefix | Exact"
+
+---
+#! Policy: Validate Ingress Resource Limits
+#!
+#! Ensures Ingress resources don't have excessive configuration
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-ingress-limits
+  annotations:
+    policies.kyverno.io/title: Validate Ingress Resource Limits
+    policies.kyverno.io/category: Resource Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Validates that Ingress resources don't have excessive rules or paths
+      which could cause performance issues.
+spec:
+  validationFailureAction: Audit  #! Audit mode - warn but don't block
+  background: true
+  rules:
+    - name: limit-rules-count
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+      validate:
+        message: >-
+          Ingress has more than 10 rules which may impact performance.
+          Consider splitting into multiple Ingress resources.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.rules | length(@) }}"
+                operator: GreaterThan
+                value: 10

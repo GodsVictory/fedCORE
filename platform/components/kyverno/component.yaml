@@ -1,0 +1,77 @@
+#@ load("@ytt:data", "data")
+---
+#! Helm chart configuration
+helm:
+  sourceRepo: https://kyverno.github.io/kyverno/
+  chart: kyverno
+  version: "3.7.1"
+  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "https://kyverno.github.io/kyverno/"
+
+  #! Release configuration
+  release:
+    name: kyverno
+    namespace: kyverno
+
+  #! Values for helm template
+  values:
+    #! Admission controller configuration
+    admissionController:
+      replicas: 2
+      resources:
+        limits:
+          cpu: 500m
+          memory: 512Mi
+        requests:
+          cpu: 200m
+          memory: 256Mi
+
+    #! Background controller for policy reports and background scanning
+    backgroundController:
+      replicas: 1
+      resources:
+        limits:
+          cpu: 200m
+          memory: 256Mi
+        requests:
+          cpu: 100m
+          memory: 128Mi
+
+    #! Cleanup controller for policy reports
+    cleanupController:
+      resources:
+        limits:
+          cpu: 100m
+          memory: 128Mi
+        requests:
+          cpu: 50m
+          memory: 64Mi
+
+    #! Reports controller for policy violation tracking
+    reportsController:
+      resources:
+        limits:
+          cpu: 200m
+          memory: 256Mi
+        requests:
+          cpu: 100m
+          memory: 128Mi
+
+    #! Feature flags
+    features:
+      policyExceptions:
+        enabled: true
+        namespace: kyverno
+
+    #! Service monitor for Prometheus (if available)
+    #@ if data.values.monitoring.enabled:
+    serviceMonitor:
+      enabled: true
+      labels:
+        prometheus: kube-prometheus
+    #@ end
+
+    #! Metrics exposure
+    metricsConfig:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"

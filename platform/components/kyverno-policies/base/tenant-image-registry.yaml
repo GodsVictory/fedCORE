@@ -1,0 +1,176 @@
+#@ load("@ytt:data", "data")
+
+#! Kyverno Policy: Restrict Image Registries for Tenant Namespaces
+#!
+#! This policy ensures tenants can only pull container images from approved
+#! registries, preventing supply chain attacks and ensuring compliance.
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-tenant-image-registries
+  annotations:
+    policies.kyverno.io/title: Restrict Image Registries for Tenants
+    policies.kyverno.io/category: Security, Multi-Tenancy
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Tenant workloads must use images from approved registries only.
+      This prevents pulling from untrusted sources like Docker Hub.
+spec:
+  #@ if data.values.tenant_policies.enforce_image_registry:
+  validationFailureAction: Enforce
+  #@ else:
+  validationFailureAction: Audit
+  #@ end
+  background: true
+  rules:
+    - name: validate-image-registry
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  #! Only apply to Capsule-managed tenant namespaces
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      exclude:
+        any:
+          #! Allow system namespaces to pull from anywhere
+          - resources:
+              namespaces:
+                - kube-system
+                - capsule-system
+                - kro-system
+                - flux-system
+                - ack-system
+                - aso-system
+      validate:
+        message: >-
+          Images must be from approved registries. Allowed registries:
+          #@ for registry in data.values.tenant_policies.allowed_registries:
+          - #@ registry
+          #@ end
+        #! Validate all container types
+        foreach:
+          - list: "request.object.spec.[ephemeralContainers, initContainers, containers][]"
+            deny:
+              conditions:
+                all:
+                  #! Image must start with one of the allowed registry prefixes
+                  - key: "{{ element.image }}"
+                    operator: AnyNotIn
+                    value:
+                      #@ for registry in data.values.tenant_policies.allowed_registries:
+                      - #@ registry + "*"
+                      #@ end
+
+---
+#! Kyverno Policy: Validate Image Tag is Not 'latest'
+#!
+#! Enforce semantic versioning for tenant images to ensure reproducibility
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag-tenants
+  annotations:
+    policies.kyverno.io/title: Disallow 'latest' Tag for Tenant Images
+    policies.kyverno.io/category: Best Practices, Multi-Tenancy
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      The 'latest' tag is mutable and should not be used in production tenant workloads.
+      Use specific version tags (e.g., v1.2.3) for reproducibility.
+spec:
+  #@ if data.values.tenant_policies.disallow_latest_tag:
+  validationFailureAction: Enforce
+  #@ else:
+  validationFailureAction: Audit
+  #@ end
+  background: true
+  rules:
+    - name: validate-image-tag
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Using the 'latest' image tag is not allowed. Please use a specific version tag.
+        foreach:
+          - list: "request.object.spec.[ephemeralContainers, initContainers, containers][]"
+            deny:
+              conditions:
+                any:
+                  #! Deny if tag is explicitly 'latest'
+                  - key: "{{ element.image }}"
+                    operator: Equals
+                    value: "*:latest"
+                  #! Deny if no tag specified (defaults to latest)
+                  - key: "{{ element.image }}"
+                    operator: NotEquals
+                    value: "*:*"
+
+---
+#! Kyverno Policy: Require Image Signature Verification (Optional)
+#!
+#! If you use Sigstore/Cosign for image signing, this enforces verification
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-tenant-image-signatures
+  annotations:
+    policies.kyverno.io/title: Verify Tenant Image Signatures
+    policies.kyverno.io/category: Security, Supply Chain
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Verify that tenant container images are signed by trusted authorities.
+spec:
+  #@ if data.values.tenant_policies.require_image_signatures:
+  validationFailureAction: Enforce
+  #@ else:
+  validationFailureAction: Audit
+  #@ end
+  background: false  #! Signature verification requires live admission
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: verify-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      #! Verify images using Cosign public key
+      verifyImages:
+        - imageReferences:
+            #@ for registry in data.values.tenant_policies.allowed_registries:
+            - #@ registry + "*"
+            #@ end
+          #! Replace with your actual Cosign public key or keyless verification
+          #@ if hasattr(data.values.tenant_policies, "image_signing_public_key"):
+          attestors:
+            - count: 1
+              entries:
+                - keys:
+                    publicKeys: #@ data.values.tenant_policies.image_signing_public_key
+          #@ else:
+          #! Keyless verification with Fulcio/Rekor
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          #@ end

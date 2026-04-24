@@ -1,0 +1,77 @@
+---
+#! Kyverno ClusterPolicy to auto-populate ACK tenant metadata labels
+#! for all AWS ACK resources (S3, DynamoDB, RDS, SQS, etc.)
+#!
+#! This policy:
+#! 1. Looks up the tenant's AWS account ID from the Capsule Tenant annotation
+#! 2. Adds the platform.fedcore.io/ack-target label for IAMRoleSelector matching
+#! 3. Adds the platform.fedcore.io/resource-type: provisioned label (default for non-bootstrap)
+#! 4. Adds tenant label and tag for billing/tracking
+#!
+#! Cross-account routing is handled by IAMRoleSelector CRDs (created per tenant
+#! during onboarding), NOT by per-resource annotations.
+#!
+#! Cluster-account resources opt out by setting the annotation:
+#!   platform.fedcore.io/cluster-account: "true"
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: ack-tenant-metadata
+  annotations:
+    policies.kyverno.io/title: ACK Tenant Metadata
+    policies.kyverno.io/category: Multi-Tenancy, AWS
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: ACK Resources
+    policies.kyverno.io/description: >-
+      Automatically populates tenant metadata labels on all AWS ACK resources
+      for IAMRoleSelector cross-account routing and billing/tracking.
+      Applies to all services.k8s.aws resources (DynamoDB, S3, RDS, SQS, etc.)
+      Excludes resources annotated with platform.fedcore.io/cluster-account: "true".
+spec:
+  background: true
+  rules:
+    - name: populate-ack-tenant-metadata
+      match:
+        any:
+          - resources:
+              kinds:
+                #! Match all ACK resources
+                - "*.services.k8s.aws/*"
+      exclude:
+        any:
+          - resources:
+              annotations:
+                #! Skip cluster-account resources (e.g., Pod Identity roles)
+                platform.fedcore.io/cluster-account: "true"
+      context:
+        #! Look up the namespace where the ACK resource is being created
+        - name: namespaceResource
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{ request.object.metadata.namespace }}"
+            jmesPath: "metadata.labels.\"capsule.clastix.io/tenant\""
+
+        #! Look up the tenant's AWS account ID from the Capsule Tenant resource
+        - name: tenantResource
+          apiCall:
+            urlPath: "/apis/capsule.clastix.io/v1beta2/tenants/{{ namespaceResource }}"
+            jmesPath: "metadata.annotations.\"platform.fedcore.io/aws-account-id\""
+
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              #! Tenant label for billing/tracking
+              platform.fedcore.io/tenant: "{{ namespaceResource }}"
+              #! IAMRoleSelector target label — matched by the per-tenant
+              #! provisioner IAMRoleSelector to route resources cross-account
+              platform.fedcore.io/ack-target: "{{ namespaceResource }}"
+              #! Resource type — "provisioned" is the default for non-bootstrap resources
+              #! Bootstrap resources explicitly set "bootstrap" in their RGD templates
+              platform.fedcore.io/resource-type: provisioned
+          spec:
+            #! Add tenant tag to AWS resource tags for billing and tracking
+            #! Most ACK resources support a tags field
+            +(tags):
+              - key: platform.fedcore.io/tenant
+                value: "{{ namespaceResource }}"

@@ -1,0 +1,369 @@
+#@ load("@ytt:data", "data")
+---
+#! Policy: Require Strict mTLS for Tenant Namespaces
+#!
+#! Enforce STRICT mTLS mode for all PeerAuthentication policies in tenant namespaces
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-strict-mtls-tenant
+  annotations:
+    policies.kyverno.io/title: Require Strict mTLS for Tenant Namespaces
+    policies.kyverno.io/category: Istio, Multi-Tenancy, Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: PeerAuthentication
+    policies.kyverno.io/description: >-
+      Enforces STRICT mTLS mode for all tenant PeerAuthentication policies.
+      Prevents tenants from weakening mesh-wide mTLS requirements.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-strict-mode
+      match:
+        any:
+          - resources:
+              kinds:
+                - PeerAuthentication
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          PeerAuthentication in tenant namespaces must use STRICT mTLS mode.
+          PERMISSIVE or DISABLE modes are not allowed for security compliance.
+        pattern:
+          spec:
+            mtls:
+              mode: STRICT
+
+---
+#! Policy: Validate Tenant AuthorizationPolicy Scope
+#!
+#! Prevent tenants from creating AuthorizationPolicies that bypass tenant isolation
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-tenant-authz-policies
+  annotations:
+    policies.kyverno.io/title: Validate Tenant Authorization Policy Scope
+    policies.kyverno.io/category: Istio, Multi-Tenancy, Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: AuthorizationPolicy
+    policies.kyverno.io/description: >-
+      Prevents tenants from creating AuthorizationPolicies that allow
+      cross-tenant traffic or modify mesh-wide security posture.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: deny-cross-tenant-allow-rules
+      match:
+        any:
+          - resources:
+              kinds:
+                - AuthorizationPolicy
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          AuthorizationPolicy ALLOW rules must restrict source namespaces to the same tenant.
+          Use source.namespaces with your tenant prefix (e.g., "acme-*") to prevent cross-tenant access.
+        deny:
+          conditions:
+            any:
+              #! Deny if action is ALLOW and rules don't restrict source namespaces
+              - key: "{{ request.object.spec.action || 'ALLOW' }}"
+                operator: Equals
+                value: "ALLOW"
+              - key: "{{ request.object.spec.rules[].from[].source.namespaces | length(@) }}"
+                operator: Equals
+                value: 0
+
+    - name: deny-mesh-wide-authz-policies
+      match:
+        any:
+          - resources:
+              kinds:
+                - AuthorizationPolicy
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Tenant AuthorizationPolicies cannot use empty selector ({}) which applies mesh-wide.
+          Policies must target specific workloads within the tenant namespace.
+        deny:
+          conditions:
+            any:
+              #! Deny if selector is explicitly empty (mesh-wide scope)
+              - key: "{{ request.object.spec.selector | length(@) }}"
+                operator: Equals
+                value: 0
+
+---
+#! Policy: Prevent Istio System Namespace Modifications
+#!
+#! Prevent tenants from creating Istio resources in istio-system namespace
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: prevent-istio-system-modifications
+  annotations:
+    policies.kyverno.io/title: Prevent Istio System Namespace Modifications
+    policies.kyverno.io/category: Istio, Multi-Tenancy, Security
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: PeerAuthentication, AuthorizationPolicy, DestinationRule, VirtualService
+    policies.kyverno.io/description: >-
+      Prevents tenant users from creating or modifying Istio resources
+      in the istio-system namespace, which would affect mesh-wide configuration.
+spec:
+  validationFailureAction: Enforce
+  background: false  #! Only validate on admission (not background scan)
+  rules:
+    - name: block-istio-system-resources
+      match:
+        any:
+          - resources:
+              kinds:
+                - PeerAuthentication
+                - AuthorizationPolicy
+                - DestinationRule
+                - VirtualService
+                - ServiceEntry
+                - Gateway
+                - EnvoyFilter
+              namespaces:
+                - istio-system
+      exclude:
+        any:
+          #! Allow platform ServiceAccounts to manage istio-system
+          - subjects:
+              - kind: ServiceAccount
+                name: flux-*
+              - kind: ServiceAccount
+                name: kyverno-*
+          #! Allow cluster-admin role
+          - clusterRoles:
+              - cluster-admin
+      validate:
+        message: >-
+          Tenants cannot create Istio resources in istio-system namespace.
+          This namespace is reserved for platform-managed mesh configuration.
+        deny: {}
+
+---
+#! Policy: Validate Sidecar Resource Limits
+#!
+#! Ensure tenants don't override Envoy sidecar resource limits beyond allowed thresholds
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-istio-sidecar-resources
+  annotations:
+    policies.kyverno.io/title: Validate Istio Sidecar Resource Limits
+    policies.kyverno.io/category: Istio, Resource Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Validates that Istio sidecar proxy resource limits are within
+      acceptable ranges to prevent resource exhaustion.
+spec:
+  validationFailureAction: Audit  #! Audit mode - log violations but don't block
+  background: true
+  rules:
+    - name: validate-sidecar-limits
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: istio-injection
+                    operator: In
+                    values:
+                      - enabled
+      validate:
+        message: >-
+          Istio sidecar (istio-proxy) container has excessive resource requests or limits.
+          Maximum allowed: CPU 500m, Memory 512Mi.
+        deny:
+          conditions:
+            any:
+              #! Check if istio-proxy container exceeds CPU limit
+              - key: "{{ request.object.spec.containers[?name=='istio-proxy'].resources.limits.cpu || '0' }}"
+                operator: GreaterThan
+                value: "500m"
+              #! Check if istio-proxy container exceeds memory limit
+              - key: "{{ request.object.spec.containers[?name=='istio-proxy'].resources.limits.memory || '0' }}"
+                operator: GreaterThan
+                value: "512Mi"
+
+---
+#! Policy: Auto-Label Istio-Injected Pods with Tenant
+#!
+#! Automatically add tenant labels to pods for observability and policy enforcement
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: auto-label-istio-pods-tenant
+  annotations:
+    policies.kyverno.io/title: Auto-Label Istio Pods with Tenant
+    policies.kyverno.io/category: Istio, Multi-Tenancy, Observability
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Automatically adds tenant and namespace labels to Istio-injected pods
+      for improved observability in Splunk and Istio telemetry.
+spec:
+  background: false
+  rules:
+    - name: add-tenant-labels
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: istio-injection
+                    operator: In
+                    values:
+                      - enabled
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              #! Add tenant label from namespace for observability
+              istio.io/tenant: "{{ request.namespace.metadata.labels.\"capsule.clastix.io/tenant\" }}"
+              #! Add cluster name for multi-cluster observability
+              istio.io/cluster: #@ data.values.cluster_name
+
+---
+#! Policy: Require Istio Injection Label on Tenant Namespaces
+#!
+#! Validate that tenant namespaces explicitly opt-in or opt-out of Istio injection
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-istio-injection-label
+  annotations:
+    policies.kyverno.io/title: Require Istio Injection Label on Tenant Namespaces
+    policies.kyverno.io/category: Istio, Multi-Tenancy
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Requires tenant namespaces to explicitly set istio-injection label
+      to either 'enabled' or 'disabled' for clarity.
+spec:
+  validationFailureAction: Audit  #! Audit mode - log missing labels but don't block
+  background: true
+  rules:
+    - name: check-injection-label
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Tenant namespaces should explicitly set 'istio-injection' label
+          to 'enabled' or 'disabled' to indicate Istio sidecar injection preference.
+        pattern:
+          metadata:
+            labels:
+              istio-injection: "enabled | disabled"
+
+---
+#! Policy: Validate DestinationRule TLS Settings
+#!
+#! Ensure tenants don't disable TLS for services via DestinationRule
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-destination-rule-tls
+  annotations:
+    policies.kyverno.io/title: Validate DestinationRule TLS Settings
+    policies.kyverno.io/category: Istio, Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: DestinationRule
+    policies.kyverno.io/description: >-
+      Prevents tenants from disabling TLS via DestinationRule,
+      which would bypass mesh-wide mTLS requirements.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: deny-tls-disable
+      match:
+        any:
+          - resources:
+              kinds:
+                - DestinationRule
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          DestinationRule cannot disable TLS (mode: DISABLE).
+          TLS mode must be ISTIO_MUTUAL for mTLS compliance.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.trafficPolicy.tls.mode || 'ISTIO_MUTUAL' }}"
+                operator: Equals
+                value: "DISABLE"
+
+---
+#! Policy: Prevent ServiceEntry External Service Bypass
+#!
+#! Validate that tenants don't use ServiceEntry to bypass egress controls
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-service-entry-egress
+  annotations:
+    policies.kyverno.io/title: Validate ServiceEntry Egress Controls
+    policies.kyverno.io/category: Istio, Network Security
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: ServiceEntry
+    policies.kyverno.io/description: >-
+      Validates that ServiceEntry resources don't bypass
+      network egress controls via unrestricted wildcards.
+spec:
+  validationFailureAction: Audit  #! Audit mode - monitor but don't block
+  background: true
+  rules:
+    - name: warn-wildcard-service-entries
+      match:
+        any:
+          - resources:
+              kinds:
+                - ServiceEntry
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          ServiceEntry uses wildcard hosts which may bypass egress controls.
+          Consider using specific hostnames for security compliance.
+        deny:
+          conditions:
+            any:
+              #! Check for wildcard hosts like "*.example.com"
+              - key: "{{ request.object.spec.hosts[?contains(@, '*')] | length(@) }}"
+                operator: GreaterThan
+                value: 0

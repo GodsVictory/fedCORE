@@ -1,0 +1,161 @@
+#! Tetragon TracingPolicies for Multi-Tenant Security
+#! =============================================================================
+
+#! Policy 1: Detect Cross-Tenant Namespace Access Attempts
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: tenant-boundary-violation
+  namespace: kube-system
+spec:
+  kprobes:
+  - call: "security_file_open"
+    syscall: false
+    args:
+    - index: 0
+      type: "file"
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "Prefix"
+        values:
+        #! Alert on attempts to access other tenant's secrets
+        - "/var/run/secrets/kubernetes.io/serviceaccount"
+      matchActions:
+      - action: Post  #! Log event to Splunk
+      matchBinaries:
+      #! Exclude legitimate Kubernetes system processes
+      - operator: "NotIn"
+        values:
+        - "/usr/bin/kubelet"
+        - "/usr/local/bin/kube-proxy"
+
+---
+#! Policy 2: Detect Privilege Escalation Attempts
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: privilege-escalation-detection
+  namespace: kube-system
+spec:
+  kprobes:
+  - call: "security_capset"
+    syscall: false
+    return: true
+    returnArg:
+      type: "int"
+    selectors:
+    - matchActions:
+      - action: Post  #! Log all capability changes
+      matchNamespaces:
+      #! Monitor all tenant namespaces (Capsule-managed)
+      - operator: "In"
+        values:
+        - "*"  #! All namespaces
+      matchCapabilities:
+      #! Alert on dangerous capability additions
+      - type: "Effective"
+        operator: "In"
+        values:
+        - "CAP_SYS_ADMIN"
+        - "CAP_SYS_MODULE"
+        - "CAP_SYS_RAWIO"
+        - "CAP_SYS_PTRACE"
+        - "CAP_DAC_READ_SEARCH"
+
+---
+#! Policy 3: Detect Suspicious Process Execution
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: suspicious-process-execution
+  namespace: kube-system
+spec:
+  tracepoints:
+  - subsystem: "syscalls"
+    event: "sys_enter_execve"
+    args:
+    - index: 0
+      type: "string"
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "In"
+        values:
+        #! Suspicious binaries that should rarely run in containers
+        - "/bin/bash"
+        - "/bin/sh"
+        - "/usr/bin/nc"
+        - "/usr/bin/ncat"
+        - "/usr/bin/netcat"
+        - "/usr/bin/wget"
+        - "/usr/bin/curl"
+        - "/usr/bin/ssh"
+      matchActions:
+      - action: Post  #! Log to Splunk for investigation
+      matchNamespaces:
+      #! Only monitor tenant namespaces, not system namespaces
+      - operator: "NotIn"
+        values:
+        - "kube-system"
+        - "kube-public"
+        - "kube-node-lease"
+        - "flux-system"
+        - "capsule-system"
+        - "splunk-system"
+
+---
+#! Policy 4: Detect Cryptocurrency Mining
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: crypto-mining-detection
+  namespace: kube-system
+spec:
+  tracepoints:
+  - subsystem: "syscalls"
+    event: "sys_enter_execve"
+    args:
+    - index: 0
+      type: "string"
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "In"
+        values:
+        #! Known crypto mining binaries
+        - "xmrig"
+        - "minerd"
+        - "cpuminer"
+        - "ethminer"
+        - "cryptonight"
+      matchActions:
+      - action: Sigkill  #! KILL process immediately (enforcement mode)
+      - action: Post     #! Also log to Splunk
+
+---
+#! Policy 5: Detect Container Escape Attempts
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: container-escape-detection
+  namespace: kube-system
+spec:
+  kprobes:
+  - call: "security_kernel_read_file"
+    syscall: false
+    args:
+    - index: 0
+      type: "file"
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "Prefix"
+        values:
+        #! Alert on attempts to read kernel/system files
+        - "/proc/sys/kernel/"
+        - "/sys/kernel/"
+        - "/dev/kmem"
+        - "/dev/mem"
+      matchActions:
+      - action: Post  #! Log to Splunk

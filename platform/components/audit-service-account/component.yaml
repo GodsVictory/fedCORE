@@ -1,0 +1,5 @@
+#@ load("@ytt:data", "data")
+---
+#! This component creates a ServiceAccount for audit operations
+#! with read-only access to all cluster objects and appropriate
+#! AWS Pod Identity configuration for secure access

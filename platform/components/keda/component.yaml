@@ -1,0 +1,163 @@
+#@ load("@ytt:data", "data")
+---
+helm:
+  sourceRepo: https://kedacore.github.io/charts
+  chart: keda
+  version: "2.18.0"
+  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "https://kedacore.github.io/charts"
+
+  release:
+    name: keda
+    namespace: keda
+
+  flags: ["--include-crds"]
+
+  values:
+    image:
+      keda:
+        registry: #@ data.values.oci_registry
+        repository: kedacore/keda
+      metricsApiServer:
+        registry: #@ data.values.oci_registry
+        repository: kedacore/keda-metrics-apiserver
+      webhooks:
+        registry: #@ data.values.oci_registry
+        repository: kedacore/keda-admission-webhooks
+
+    nodeSelector:
+      workload-type: platform
+
+    tolerations:
+      - key: workload-type
+        operator: Equal
+        value: platform
+        effect: NoSchedule
+
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: workload-type
+                  operator: In
+                  values:
+                    - platform
+
+    operator:
+      replicaCount: 2
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                      - platform
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - keda-operator
+                topologyKey: kubernetes.io/hostname
+
+    metricsServer:
+      replicaCount: 2
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                      - platform
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - keda-operator-metrics-apiserver
+                topologyKey: kubernetes.io/hostname
+
+    webhooks:
+      replicaCount: 2
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                      - platform
+
+    resources:
+      operator:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      metricServer:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      webhooks:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
+    podDisruptionBudget:
+      operator:
+        minAvailable: 1
+      metricServer:
+        minAvailable: 1
+      webhooks:
+        minAvailable: 1
+
+    podSecurityContext:
+      operator:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      metricServer:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      webhooks:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+    #@ if data.values.monitoring.enabled:
+    prometheus:
+      operator:
+        enabled: true
+        port: 8080
+      metricServer:
+        enabled: true
+        port: 8080
+      webhooks:
+        enabled: true
+        port: 8080
+    #@ end

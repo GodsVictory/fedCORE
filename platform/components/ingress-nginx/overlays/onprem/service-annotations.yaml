@@ -1,0 +1,22 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! On-Premises NGINX Ingress Controller configuration
+#! Configures for MetalLB or NodePort
+
+#! overlay-phase: pre-render
+---
+#@overlay/match by=overlay.subset({"name": "ingress-nginx"})
+---
+helm:
+  values:
+    controller:
+      #@overlay/match missing_ok=True
+      service:
+        #! Use LoadBalancer if MetalLB is available, otherwise NodePort
+        type: LoadBalancer
+        #@overlay/match missing_ok=True
+        annotations:
+          #@overlay/match missing_ok=True
+          #! MetalLB annotation (if available)
+          metallb.universe.tf/allow-shared-ip: "ingress-nginx"

@@ -1,0 +1,9 @@
+#@ load("@ytt:data", "data")
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: audit-system
+  labels:
+    app.kubernetes.io/name: audit-service-account
+    platform.fedcore.io/cluster: #@ data.values.cluster_name

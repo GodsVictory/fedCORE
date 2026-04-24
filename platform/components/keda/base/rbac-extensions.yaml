@@ -1,0 +1,71 @@
+#@ load("@ytt:data", "data")
+---
+#! Aggregated ClusterRoles that automatically extend the built-in
+#! admin, edit, and view roles with KEDA CRD permissions.
+
+#! Admin: full CRUD on all KEDA resources including ClusterTriggerAuthentication
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: keda-admin-extension
+  labels:
+    app.kubernetes.io/managed-by: fedcore-platform
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+rules:
+- apiGroups: ["keda.sh"]
+  resources:
+    - scaledobjects
+    - scaledjobs
+    - triggerauthentications
+    - clustertriggerauthentications
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["keda.sh"]
+  resources:
+    - scaledobjects/status
+    - scaledobjects/finalizers
+    - scaledjobs/status
+    - scaledjobs/finalizers
+  verbs: ["get", "update", "patch"]
+---
+#! Edit: CRUD on namespace-scoped KEDA resources (no ClusterTriggerAuthentication)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: keda-edit-extension
+  labels:
+    app.kubernetes.io/managed-by: fedcore-platform
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+rules:
+- apiGroups: ["keda.sh"]
+  resources:
+    - scaledobjects
+    - scaledjobs
+    - triggerauthentications
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["keda.sh"]
+  resources:
+    - scaledobjects/status
+    - scaledjobs/status
+  verbs: ["get"]
+---
+#! View: read-only on all KEDA resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: keda-view-extension
+  labels:
+    app.kubernetes.io/managed-by: fedcore-platform
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+rules:
+- apiGroups: ["keda.sh"]
+  resources:
+    - scaledobjects
+    - scaledjobs
+    - triggerauthentications
+    - clustertriggerauthentications
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["keda.sh"]
+  resources:
+    - scaledobjects/status
+    - scaledjobs/status
+  verbs: ["get"]

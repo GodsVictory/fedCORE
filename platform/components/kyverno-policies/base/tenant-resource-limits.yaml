@@ -1,0 +1,431 @@
+#@ load("@ytt:data", "data")
+
+#! Kyverno Policy: Resource Limits and Quotas for Tenant Namespaces
+#!
+#! Ensures fair resource allocation and prevents noisy neighbor problems.
+#!
+#! The following policy is KEPT but may be removed in future:
+#!   ⚠️ generate-tenant-resource-quota (per-namespace quotas)
+#!      - Capsule supports tenant-level (aggregate) quotas only
+#!      - This policy provides per-namespace limits within a tenant
+#!      - Evaluate if tenant-level quotas + LimitRanges are sufficient
+#!
+#! ============================================================================
+
+---
+#! Policy 1: Require Resource Requests and Limits
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-tenant-resource-limits
+  annotations:
+    policies.kyverno.io/title: Require CPU and Memory Requests/Limits
+    policies.kyverno.io/category: Multi-Tenancy, Resource Management
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Every container in tenant namespaces must specify CPU and memory
+      resource requests and limits to ensure fair resource allocation.
+spec:
+  #@ if data.values.tenant_policies.require_resource_limits:
+  validationFailureAction: Enforce
+  #@ else:
+  validationFailureAction: Audit
+  #@ end
+  background: true
+  rules:
+    - name: validate-resources
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          All containers must have CPU and memory requests and limits defined.
+          Example:
+            resources:
+              requests:
+                memory: "64Mi"
+                cpu: "250m"
+              limits:
+                memory: "128Mi"
+                cpu: "500m"
+        foreach:
+          - list: "request.object.spec.[ephemeralContainers, initContainers, containers][]"
+            deny:
+              conditions:
+                any:
+                  #! Deny if requests.memory is missing
+                  - key: "{{ element.resources.requests.memory || '' }}"
+                    operator: Equals
+                    value: ""
+                  #! Deny if requests.cpu is missing
+                  - key: "{{ element.resources.requests.cpu || '' }}"
+                    operator: Equals
+                    value: ""
+                  #! Deny if limits.memory is missing
+                  - key: "{{ element.resources.limits.memory || '' }}"
+                    operator: Equals
+                    value: ""
+                  #! Deny if limits.cpu is missing
+                  - key: "{{ element.resources.limits.cpu || '' }}"
+                    operator: Equals
+                    value: ""
+
+---
+#! Policy 2: Generate ResourceQuota per Namespace
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: generate-tenant-resource-quota
+  annotations:
+    policies.kyverno.io/title: Generate Default ResourceQuota
+    policies.kyverno.io/category: Multi-Tenancy, Resource Management
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Namespace, ResourceQuota
+    policies.kyverno.io/description: >-
+      Automatically creates a ResourceQuota for each tenant namespace
+      to limit total resource consumption within the namespace.
+spec:
+  rules:
+    - name: generate-resource-quota
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: default-resource-quota
+        namespace: "{{ request.object.metadata.name }}"
+        synchronize: true
+        data:
+          metadata:
+            annotations:
+              policies.kyverno.io/generated-by: "kyverno-tenant-policies"
+          spec:
+            hard:
+              #! CPU and Memory quotas
+              requests.cpu: #@ data.values.tenant_policies.default_namespace_cpu_quota
+              requests.memory: #@ data.values.tenant_policies.default_namespace_memory_quota
+              limits.cpu: #@ data.values.tenant_policies.default_namespace_cpu_quota
+              limits.memory: #@ data.values.tenant_policies.default_namespace_memory_quota
+
+              #! Object count quotas
+              pods: "50"
+              services: "10"
+              configmaps: "20"
+              secrets: "20"
+              persistentvolumeclaims: "10"
+
+              #! Prevent expensive resources
+              services.loadbalancers: "2"
+              services.nodeports: "0"  #! Disable NodePorts for security
+
+---
+#! Policy 3: Restrict Expensive Resource Types
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-tenant-expensive-resources
+  annotations:
+    policies.kyverno.io/title: Restrict Expensive Resource Types
+    policies.kyverno.io/category: Multi-Tenancy, Cost Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Service, PersistentVolumeClaim
+    policies.kyverno.io/description: >-
+      Prevents tenants from creating resource-intensive objects like
+      LoadBalancers or very large PVCs without approval.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: restrict-loadbalancer-services
+      match:
+        any:
+          - resources:
+              kinds:
+                - Service
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          LoadBalancer services require explicit approval.
+          Add annotation 'fedcore.io/loadbalancer-approved: "true"' to override.
+        deny:
+          conditions:
+            all:
+              #! Service type is LoadBalancer
+              - key: "{{ request.object.spec.type }}"
+                operator: Equals
+                value: LoadBalancer
+              #! And annotation is not present
+              - key: "{{ request.object.metadata.annotations.\"fedcore.io/loadbalancer-approved\" || 'false' }}"
+                operator: NotEquals
+                value: "true"
+
+    - name: restrict-large-pvc
+      match:
+        any:
+          - resources:
+              kinds:
+                - PersistentVolumeClaim
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          PVCs larger than 50Gi require explicit approval.
+          Add annotation 'fedcore.io/large-pvc-approved: "true"' to override.
+        #! This uses CEL for complex validation
+        celValidationExpressions:
+          - expression: >-
+              (request.object.spec.resources.requests.storage.matches('^([0-9]+)Gi$') &&
+               int(request.object.spec.resources.requests.storage.replace('Gi', '')) <= 50) ||
+              has(request.object.metadata.annotations) &&
+              'fedcore.io/large-pvc-approved' in request.object.metadata.annotations &&
+              request.object.metadata.annotations['fedcore.io/large-pvc-approved'] == 'true'
+            message: "PVCs larger than 50Gi require approval annotation"
+
+---
+#! Policy 5: Add Cost Tracking Labels
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-tenant-cost-labels
+  annotations:
+    policies.kyverno.io/title: Add Cost Tracking Labels to Resources
+    policies.kyverno.io/category: Multi-Tenancy, Cost Management
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod, PersistentVolumeClaim, Service
+    policies.kyverno.io/description: >-
+      Automatically adds cost allocation labels to tenant resources
+      for chargeback and billing purposes.
+spec:
+  background: true
+  rules:
+    - name: add-cost-labels-to-pods
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              #! Copy tenant name for cost allocation
+              fedcore.io/tenant: "{{ request.namespace.metadata.labels.\"capsule.clastix.io/tenant\" }}"
+              #! Add cluster name for multi-cluster billing
+              fedcore.io/cluster: #@ data.values.cluster_name
+              #! Add environment for cost breakdown
+              fedcore.io/environment: #@ data.values.cloud
+
+    - name: add-cost-labels-to-pvcs
+      match:
+        any:
+          - resources:
+              kinds:
+                - PersistentVolumeClaim
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              fedcore.io/tenant: "{{ request.namespace.metadata.labels.\"capsule.clastix.io/tenant\" }}"
+              fedcore.io/cluster: #@ data.values.cluster_name
+
+---
+#! Policy 6: Validate ResourceQuota Exists in Tenant Namespaces
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-tenant-resource-quota-exists
+  annotations:
+    policies.kyverno.io/title: Validate ResourceQuota Exists
+    policies.kyverno.io/category: Multi-Tenancy, Resource Management
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Ensures that tenant namespaces have ResourceQuotas defined before
+      allowing workloads to be created. Prevents resource exhaustion.
+spec:
+  validationFailureAction: Enforce
+  background: false  #! Only validate on admission, not existing resources
+  rules:
+    - name: check-resourcequota-exists
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      #! Exception for namespace initialization - allow first few pods
+      #! to enable the namespace to become functional
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - capsule-system
+                - flux-system
+                - kyverno
+      context:
+        - name: resourcequotas
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{ request.namespace }}/resourcequotas"
+            jmesPath: "items[] | length(@)"
+      validate:
+        message: >-
+          Namespace {{ request.namespace }} does not have a ResourceQuota defined.
+          This is required for all tenant namespaces. If this is a new namespace,
+          wait a few seconds for Capsule or Kyverno to create the ResourceQuota automatically.
+        deny:
+          conditions:
+            all:
+              #! Deny if no ResourceQuotas exist
+              - key: "{{ resourcequotas }}"
+                operator: Equals
+                value: 0
+
+---
+#! Policy 7: Validate LimitRange Exists in Tenant Namespaces
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-tenant-limitrange-exists
+  annotations:
+    policies.kyverno.io/title: Validate LimitRange Exists
+    policies.kyverno.io/category: Multi-Tenancy, Resource Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Ensures that tenant namespaces have LimitRanges defined before
+      allowing workloads to be created. Prevents unbounded resource usage.
+spec:
+  validationFailureAction: Enforce
+  background: false  #! Only validate on admission, not existing resources
+  rules:
+    - name: check-limitrange-exists
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - capsule-system
+                - flux-system
+                - kyverno
+      context:
+        - name: limitranges
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{ request.namespace }}/limitranges"
+            jmesPath: "items[] | length(@)"
+      validate:
+        message: >-
+          Namespace {{ request.namespace }} does not have a LimitRange defined.
+          This is required for all tenant namespaces. If this is a new namespace,
+          wait a few seconds for Capsule to create the LimitRange automatically.
+        deny:
+          conditions:
+            all:
+              #! Deny if no LimitRanges exist
+              - key: "{{ limitranges }}"
+                operator: Equals
+                value: 0
+
+---
+#! Policy 8: Validate Tenant Namespaces Have ResourceQuota Within Grace Period
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: audit-tenant-namespace-quota-readiness
+  annotations:
+    policies.kyverno.io/title: Audit Tenant Namespace Quota Readiness
+    policies.kyverno.io/category: Multi-Tenancy, Resource Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Audits tenant namespaces to ensure they have ResourceQuotas and LimitRanges.
+      This helps identify namespaces where Capsule/Kyverno generation may have failed.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: audit-resourcequota-presence
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      context:
+        - name: resourcequotas
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{ request.object.metadata.name }}/resourcequotas"
+            jmesPath: "items[] | length(@)"
+        - name: limitranges
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{ request.object.metadata.name }}/limitranges"
+            jmesPath: "items[] | length(@)"
+        - name: namespace_age_seconds
+          variable:
+            #! Calculate namespace age (current time - creation time)
+            #! If namespace is older than 60 seconds and still missing quotas, flag it
+            jmesPath: "to_number({{ request.object.metadata.creationTimestamp }})"
+            default: 0
+      validate:
+        message: >-
+          AUDIT: Namespace {{ request.object.metadata.name }} (tenant: {{ request.object.metadata.labels."capsule.clastix.io/tenant" }})
+          is missing ResourceQuota (count: {{ resourcequotas }}) or LimitRange (count: {{ limitranges }}).
+          This may indicate Capsule/Kyverno reconciliation issues.
+          Check: kubectl get resourcequota,limitrange -n {{ request.object.metadata.name }}
+        deny:
+          conditions:
+            any:
+              #! Flag if no ResourceQuotas
+              - key: "{{ resourcequotas }}"
+                operator: Equals
+                value: 0
+              #! Flag if no LimitRanges
+              - key: "{{ limitranges }}"
+                operator: Equals
+                value: 0

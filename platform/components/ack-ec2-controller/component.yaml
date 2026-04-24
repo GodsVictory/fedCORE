@@ -1,0 +1,30 @@
+#@ load("@ytt:data", "data")
+---
+#! Helm chart configuration
+helm:
+  sourceRepo: oci://public.ecr.aws/aws-controllers-k8s
+  chart: ec2-chart
+  version: "1.11.0"
+  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "oci://public.ecr.aws/aws-controllers-k8s"
+
+  #! Release configuration
+  release:
+    name: ack-ec2-controller
+    namespace: ack-system
+
+  flags: ["--include-crds"]
+
+  #! Values for helm template
+  values:
+    #! AWS Controller for Kubernetes EC2 Controller
+    aws:
+      region: #@ data.values.region
+
+    image:
+      repository: #@ data.values.oci_registry + "/aws-controllers-k8s/ec2-controller"
+      tag: 1.11.0
+
+    #! Disable CARM (replaced by IAMRoleSelector for cross-account)
+    enableCARM: false
+    featureGates:
+      IAMRoleSelector: true

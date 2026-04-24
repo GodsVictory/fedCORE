@@ -1,0 +1,262 @@
+#@ load("@ytt:data", "data")
+
+#! Tenant Gateway RGD
+#!
+#! Allows tenants to provision dedicated Istio ingress gateways with isolated load balancers.
+#! Use this when tenants need:
+#! - Complete traffic isolation from other tenants
+#! - Custom TLS certificates
+#! - Independent scaling and resource allocation
+#! - Dedicated load balancer for billing/chargeback
+
+---
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: tenant-gateway
+  namespace: kro-system
+spec:
+  schema:
+    apiVersion: v1alpha1
+    group: gateway.fedcore.io
+    kind: TenantGateway
+    spec:
+      #! Required: Tenant name (must match Capsule tenant)
+      tenantName: string
+
+      #! Required: Gateway name
+      gatewayName: string
+
+      #! Required: Target namespace for gateway resources
+      namespace: string
+
+      #! Optional: Number of gateway pod replicas
+      replicas: integer | default=2
+
+      #! Optional: Resource limits for gateway pods
+      resources:
+        requests:
+          cpu: string | default="100m"
+          memory: string | default="128Mi"
+        limits:
+          cpu: string | default="2000m"
+          memory: string | default="1Gi"
+
+      #! Optional: Autoscaling configuration
+      autoscaling:
+        enabled: boolean | default=true
+        minReplicas: integer | default=2
+        maxReplicas: integer | default=5
+        targetCPUUtilization: integer | default=80
+
+      #! Optional: TLS certificate secret name (must be created manually)
+      tlsSecretName: string | default=""
+
+      #! Optional: Hostnames this gateway will serve
+      #! Example: ["*.acme.prod.us-east-1.fedcore.io"]
+      hosts: array | default=[]
+
+  resources:
+    #! Namespace for gateway resources
+    - id: gateway-namespace
+      template:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: ${schema.spec.namespace}
+          labels:
+            tenant: ${schema.spec.tenantName}
+            gateway: ${schema.spec.gatewayName}
+            istio-injection: enabled
+
+    #! Gateway resource (Istio traffic routing)
+    - id: gateway
+      template:
+        apiVersion: networking.istio.io/v1beta1
+        kind: Gateway
+        metadata:
+          name: ${schema.spec.gatewayName}
+          namespace: ${schema.spec.namespace}
+          labels:
+            tenant: ${schema.spec.tenantName}
+        spec:
+          selector:
+            istio: ingressgateway
+            tenant: ${schema.spec.tenantName}
+            gateway: ${schema.spec.gatewayName}
+          servers:
+          #! HTTPS server (only if TLS secret is provided)
+          - port:
+              number: 443
+              name: https
+              protocol: HTTPS
+            tls:
+              mode: SIMPLE
+              credentialName: ${schema.spec.tlsSecretName}
+            hosts: ${schema.spec.hosts}
+          #! HTTP server
+          - port:
+              number: 80
+              name: http
+              protocol: HTTP
+            hosts: ${schema.spec.hosts}
+            #! Redirect to HTTPS only if TLS is configured
+            tls:
+              httpsRedirect: true
+
+    #! ServiceAccount for gateway pods
+    - id: gateway-serviceaccount
+      template:
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: ${schema.spec.gatewayName}
+          namespace: ${schema.spec.namespace}
+          labels:
+            tenant: ${schema.spec.tenantName}
+            gateway: ${schema.spec.gatewayName}
+
+    #! Gateway Deployment
+    - id: gateway-deployment
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: ${schema.spec.gatewayName}
+          namespace: ${schema.spec.namespace}
+          labels:
+            tenant: ${schema.spec.tenantName}
+            gateway: ${schema.spec.gatewayName}
+            istio: ingressgateway
+        spec:
+          replicas: ${schema.spec.replicas}
+          selector:
+            matchLabels:
+              tenant: ${schema.spec.tenantName}
+              gateway: ${schema.spec.gatewayName}
+              istio: ingressgateway
+          template:
+            metadata:
+              labels:
+                tenant: ${schema.spec.tenantName}
+                gateway: ${schema.spec.gatewayName}
+                istio: ingressgateway
+                sidecar.istio.io/inject: "true"
+              annotations:
+                #! Inject Istio proxy
+                inject.istio.io/templates: gateway
+            spec:
+              serviceAccountName: ${schema.spec.gatewayName}
+              securityContext:
+                runAsUser: 1337
+                runAsGroup: 1337
+                runAsNonRoot: true
+                fsGroup: 1337
+              containers:
+              - name: istio-proxy
+                image: auto
+                resources:
+                  requests:
+                    cpu: ${schema.spec.resources.requests.cpu}
+                    memory: ${schema.spec.resources.requests.memory}
+                  limits:
+                    cpu: ${schema.spec.resources.limits.cpu}
+                    memory: ${schema.spec.resources.limits.memory}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+                  privileged: false
+                  readOnlyRootFilesystem: true
+
+    #! Service (exposes gateway via LoadBalancer)
+    #! Cloud-specific annotations added via overlays
+    - id: gateway-service
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: ${schema.spec.gatewayName}
+          namespace: ${schema.spec.namespace}
+          labels:
+            tenant: ${schema.spec.tenantName}
+            gateway: ${schema.spec.gatewayName}
+            istio: ingressgateway
+        spec:
+          type: LoadBalancer
+          selector:
+            tenant: ${schema.spec.tenantName}
+            gateway: ${schema.spec.gatewayName}
+            istio: ingressgateway
+          ports:
+          - name: status-port
+            port: 15021
+            targetPort: 15021
+            protocol: TCP
+          - name: http2
+            port: 80
+            targetPort: 8080
+            protocol: TCP
+          - name: https
+            port: 443
+            targetPort: 8443
+            protocol: TCP
+
+    #! HorizontalPodAutoscaler (optional)
+    - id: gateway-hpa
+      includeWhen:
+        - ${schema.spec.autoscaling.enabled}
+      template:
+        apiVersion: autoscaling/v2
+        kind: HorizontalPodAutoscaler
+        metadata:
+          name: ${schema.spec.gatewayName}
+          namespace: ${schema.spec.namespace}
+          labels:
+            tenant: ${schema.spec.tenantName}
+            gateway: ${schema.spec.gatewayName}
+        spec:
+          scaleTargetRef:
+            apiVersion: apps/v1
+            kind: Deployment
+            name: ${schema.spec.gatewayName}
+          minReplicas: ${schema.spec.autoscaling.minReplicas}
+          maxReplicas: ${schema.spec.autoscaling.maxReplicas}
+          metrics:
+          - type: Resource
+            resource:
+              name: cpu
+              target:
+                type: Utilization
+                averageUtilization: ${schema.spec.autoscaling.targetCPUUtilization}
+
+    #! Role for gateway ServiceAccount (read secrets for TLS)
+    - id: gateway-role
+      template:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: Role
+        metadata:
+          name: ${schema.spec.gatewayName}
+          namespace: ${schema.spec.namespace}
+        rules:
+        - apiGroups: [""]
+          resources: ["secrets"]
+          verbs: ["get", "watch", "list"]
+
+    #! RoleBinding
+    - id: gateway-rolebinding
+      template:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        metadata:
+          name: ${schema.spec.gatewayName}
+          namespace: ${schema.spec.namespace}
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: Role
+          name: ${schema.spec.gatewayName}
+        subjects:
+        - kind: ServiceAccount
+          name: ${schema.spec.gatewayName}
+          namespace: ${schema.spec.namespace}

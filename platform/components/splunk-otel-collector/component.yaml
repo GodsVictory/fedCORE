@@ -1,0 +1,262 @@
+#@ load("@ytt:data", "data")
+---
+#! Helm chart configuration
+helm:
+  sourceRepo: https://signalfx.github.io/splunk-otel-collector-chart
+  chart: splunk-otel-collector
+  version: "0.147.1"
+  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "https://signalfx.github.io/splunk-otel-collector-chart"
+
+  #! Release configuration
+  release:
+    name: splunk-otel-collector
+    namespace: splunk-system
+
+  #! Values for helm template
+  values:
+    #! =============================================================================
+    #! Global Configuration
+    #! =============================================================================
+    clusterName: #@ data.values.cluster_name
+
+    #! =============================================================================
+    #! Splunk Platform Configuration (HEC)
+    #! =============================================================================
+    splunkPlatform:
+      #! TODO: Configure these values in cloud-specific overlays before deployment
+      #! These are placeholder values that MUST be replaced with actual Splunk HEC endpoint
+      endpoint: "https://splunk-hec.example.com:8088/services/collector"
+      token: "00000000-0000-0000-0000-000000000000"
+
+      #! Index configuration
+      index: "main"
+      metricsIndex: "metrics"
+
+      #! Source types
+      sourcetype: "kube:container:logs"
+
+      #! Verify TLS (set to false if using self-signed certs in dev)
+      insecureSkipVerify: false
+
+    #! =============================================================================
+    #! Agent Configuration (DaemonSet for log and metric collection)
+    #! =============================================================================
+    agent:
+      #! Resource limits for agent DaemonSet
+      resources:
+        limits:
+          cpu: 500m
+          memory: 500Mi
+        requests:
+          cpu: 100m
+          memory: 200Mi
+
+      #@ if/end len(data.values.appdynamics.ip_ranges) > 0:
+      #! Environment variables for AppDynamics integration (when enabled)
+      #! These reference a Secret that must be created in the splunk-system namespace
+      #! Create with: kubectl create secret generic appdynamics-credentials \
+      #!   --from-literal=endpoint=https://<tenant>.saas.appdynamics.com/v1/logs \
+      #!   --from-literal=oauth_token=<token> \
+      #!   --from-literal=api_key=<key> \
+      #!   -n splunk-system
+      extraEnvs:
+        - name: APPDYNAMICS_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: appdynamics-credentials
+              key: endpoint
+              optional: true
+        - name: APPDYNAMICS_OAUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: appdynamics-credentials
+              key: oauth_token
+              optional: true
+        - name: APPDYNAMICS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: appdynamics-credentials
+              key: api_key
+              optional: true
+
+      #! Custom OpenTelemetry Collector configuration for the agent
+      config:
+        #! Receivers - collect logs and metrics
+        receivers:
+          #! Filelog receiver for container logs
+          filelog:
+            include:
+              - /var/log/pods/*/*/*.log
+            exclude:
+              #! Exclude agent's own logs to prevent loop
+              - /var/log/pods/splunk-system_splunk-otel-collector*/*/*.log
+            include_file_path: true
+            include_file_name: false
+            operators:
+              #! Parse CRI-O / containerd format
+              - type: container
+                id: container-parser
+
+              #! Extract pod metadata from file path
+              - type: regex_parser
+                id: extract-metadata-from-filepath
+                regex: '^\/var\/log\/pods\/(?P<namespace>[^_]+)_(?P<pod_name>[^_]+)_(?P<pod_uid>[^\/]+)\/(?P<container_name>[^\/]+)\/(?P<restart_count>\d+)\.log$'
+                parse_from: attributes["log.file.path"]
+
+        #! Processors - enrich and transform data
+        processors:
+          #! Kubernetes attributes processor - adds pod, namespace, labels metadata
+          k8sattributes:
+            #! Authentication for Kubernetes API
+            auth_type: "serviceAccount"
+            passthrough: false
+
+            #! Extract metadata from pod
+            extract:
+              metadata:
+                - k8s.namespace.name
+                - k8s.pod.name
+                - k8s.pod.uid
+                - k8s.deployment.name
+                - k8s.replicaset.name
+                - k8s.statefulset.name
+                - k8s.daemonset.name
+                - k8s.cronjob.name
+                - k8s.job.name
+                - k8s.node.name
+                - k8s.pod.start_time
+
+              #! Extract all labels as attributes
+              labels:
+                - tag_name: capsule.tenant
+                  key: capsule.clastix.io/tenant
+                  from: pod
+                - tag_name: app.name
+                  key: app.kubernetes.io/name
+                  from: pod
+                - tag_name: app.component
+                  key: app.kubernetes.io/component
+                  from: pod
+
+            #! Pod association - how to associate logs/metrics with pods
+            pod_association:
+              - sources:
+                  - from: resource_attribute
+                    name: k8s.pod.uid
+              - sources:
+                  - from: resource_attribute
+                    name: k8s.pod.name
+              - sources:
+                  - from: connection
+
+          #! Resource processor - add cluster name and rename attributes
+          resource:
+            attributes:
+              - key: cluster_name
+                value: #@ data.values.cluster_name
+                action: insert
+              - key: tenant_name
+                from_attribute: capsule.tenant
+                action: insert
+              - key: app_name
+                from_attribute: app.name
+                action: insert
+
+          #! Attributes processor - rename k8s attributes to match Splunk indexing
+          attributes/logs:
+            actions:
+              - key: namespace
+                from_attribute: k8s.namespace.name
+                action: insert
+              - key: pod_name
+                from_attribute: k8s.pod.name
+                action: insert
+              - key: container_name
+                from_attribute: k8s.container.name
+                action: insert
+              - key: node_name
+                from_attribute: k8s.node.name
+                action: insert
+
+          #! Memory limiter to prevent OOM
+          memory_limiter:
+            check_interval: 1s
+            limit_mib: 400
+
+          #! Batch processor for efficiency
+          batch:
+            send_batch_size: 1024
+            timeout: 10s
+
+          #! Resource detection - detect cloud provider and host info
+          resourcedetection:
+            detectors: [gcp, eks, ec2, azure, system]
+            timeout: 5s
+
+        #! Exporters - send data to Splunk and optionally AppDynamics
+        exporters:
+          #! Splunk HEC exporter for logs
+          splunk_hec/logs:
+            endpoint: #@ data.values.splunk.platform.endpoint if hasattr(data.values, 'splunk') and hasattr(data.values.splunk, 'platform') else "https://splunk-hec.example.com:8088/services/collector"
+            token: #@ data.values.splunk.platform.token if hasattr(data.values, 'splunk') and hasattr(data.values.splunk, 'platform') else "00000000-0000-0000-0000-000000000000"
+            source: "otel"
+            sourcetype: "kube:container:logs"
+            index: "main"
+            max_content_length_logs: 2097152
+            splunk_app_name: "otel-collector"
+            splunk_app_version: "0.119.0"
+
+            #! Indexed fields - fields that will be indexed for fast searching
+            #! These should match the fields we extract above
+            profiling_data_enabled: false
+
+          #! Splunk HEC exporter for metrics
+          splunk_hec/metrics:
+            endpoint: #@ data.values.splunk.platform.metricsEndpoint if hasattr(data.values, 'splunk') and hasattr(data.values.splunk, 'platform') else "https://splunk-hec.example.com:8088/services/collector"
+            token: #@ data.values.splunk.platform.metricsToken if hasattr(data.values, 'splunk') and hasattr(data.values.splunk, 'platform') else "00000000-0000-0000-0000-000000000000"
+            source: "otel"
+            sourcetype: "kube:metrics"
+            index: "metrics"
+
+          #@ if/end len(data.values.appdynamics.ip_ranges) > 0:
+          #! AppDynamics OTLP HTTP exporter for logs and metrics (when enabled)
+          #! Enabled when appdynamics.ip_ranges is configured (indicates AppDynamics is in use)
+          otlphttp/appdynamics:
+            #! TODO: Configure AppDynamics endpoint in cloud-specific overlays
+            #! Typically: https://<tenant>.saas.appdynamics.com/v1/logs or /v1/metrics
+            endpoint: ${env:APPDYNAMICS_ENDPOINT}
+            headers:
+              #! AppDynamics authentication
+              Authorization: "Bearer ${env:APPDYNAMICS_OAUTH_TOKEN}"
+              x-api-key: "${env:APPDYNAMICS_API_KEY}"
+            compression: gzip
+            timeout: 30s
+
+        #! Service - define pipelines
+        service:
+          pipelines:
+            #! Logs pipeline
+            logs:
+              receivers: [filelog]
+              processors: [memory_limiter, k8sattributes, resource, attributes/logs, resourcedetection, batch]
+              exporters:
+                - splunk_hec/logs
+                #@ if/end len(data.values.appdynamics.ip_ranges) > 0:
+                - otlphttp/appdynamics
+
+            #! Metrics pipeline (if metrics collection is enabled)
+            metrics:
+              receivers: [hostmetrics, kubeletstats, signalfx]
+              processors: [memory_limiter, k8sattributes, resource, resourcedetection, batch]
+              exporters:
+                - splunk_hec/metrics
+                #@ if/end len(data.values.appdynamics.ip_ranges) > 0:
+                - otlphttp/appdynamics
+
+    #! =============================================================================
+    #! Cluster Receiver (Disabled - we use custom agent config for log/metrics)
+    #! =============================================================================
+    #! Default is enabled:true for cluster-wide metrics collection
+    #! We disable it since our custom agent.config handles all collection
+    clusterReceiver:
+      enabled: false
