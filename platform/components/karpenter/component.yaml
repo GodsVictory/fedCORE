@@ -1,0 +1,78 @@
+#@ load("@ytt:data", "data")
+---
+helm:
+  sourceRepo: oci://public.ecr.aws/karpenter
+  chart: karpenter
+  version: "1.1.1"
+  mirrorRepo: #@ data.values.helm_repositories.oci_registry_url if data.values.helm_repositories.use_mirror else "oci://public.ecr.aws/karpenter"
+
+  release:
+    name: karpenter
+    namespace: karpenter
+
+  flags: ["--include-crds"]
+
+  values:
+    controller:
+      image:
+        repository: #@ data.values.oci_registry + "/karpenter/controller"
+        tag: "1.8.3"
+        digest: ""
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: "2"
+          memory: 1Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+
+    podSecurityContext:
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+
+    nodeSelector:
+      workload-type: platform
+
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: workload-type
+        operator: Equal
+        value: platform
+        effect: NoSchedule
+
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: workload-type
+                  operator: In
+                  values:
+                    - platform
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: karpenter
+            topologyKey: kubernetes.io/hostname
+
+    settings:
+      clusterName: #@ data.values.cluster_name
+      #@ if data.values.cloud == "aws":
+      interruptionQueue: #@ data.values.cluster_name
+      #@ end
+
+    #@ if data.values.monitoring.enabled:
+    serviceMonitor:
+      enabled: true
+      additionalLabels:
+        prometheus: kube-prometheus
+    #@ end

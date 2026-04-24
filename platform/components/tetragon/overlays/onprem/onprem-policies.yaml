@@ -1,0 +1,40 @@
+#@ load("@ytt:data", "data")
+
+#! On-Premises Tetragon TracingPolicies
+#!
+#! Adds on-prem specific security monitoring policies for Splunk correlation
+
+#! overlay-phase: post-render
+
+#! On-Prem Specific TracingPolicy: Monitor physical host access attempts
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: onprem-host-access-detection
+  namespace: kube-system
+spec:
+  kprobes:
+  - call: "security_file_open"
+    syscall: false
+    args:
+    - index: 0
+      type: "file"
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "Prefix"
+        values:
+        #! Monitor access to host filesystem mounts
+        - "/hostfs/"
+        - "/host/"
+        - "/rootfs/"
+      matchActions:
+      - action: Post  #! Log to Splunk
+      matchNamespaces:
+      #! Only monitor tenant namespaces
+      - operator: "NotIn"
+        values:
+        - "kube-system"
+        - "flux-system"
+        - "capsule-system"

@@ -1,0 +1,392 @@
+#@ load("@ytt:data", "data")
+
+#! Kyverno Policy: Security Baseline for Tenant Workloads
+#!
+#! Implements Pod Security Standards (PSS) "restricted" profile
+#! with additional tenant-specific security requirements.
+
+---
+#! Policy 1: Block Privileged Containers
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-tenant-privileged-containers
+  annotations:
+    policies.kyverno.io/title: Restrict Privileged Containers
+    policies.kyverno.io/category: Pod Security Standards (Restricted), Multi-Tenancy
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Tenant workloads cannot run privileged containers or containers
+      with privilege escalation enabled.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: deny-privileged
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Privileged containers and privilege escalation are not allowed.
+          Set securityContext.privileged=false and securityContext.allowPrivilegeEscalation=false
+        foreach:
+          - list: "request.object.spec.[ephemeralContainers, initContainers, containers][]"
+            deny:
+              conditions:
+                any:
+                  #! Deny if privileged is true
+                  - key: "{{ element.securityContext.privileged || false }}"
+                    operator: Equals
+                    value: true
+                  #! Deny if allowPrivilegeEscalation is not explicitly false
+                  - key: "{{ element.securityContext.allowPrivilegeEscalation }}"
+                    operator: NotEquals
+                    value: false
+
+---
+#! Policy 2: Require Non-Root Containers
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-tenant-run-as-non-root
+  annotations:
+    policies.kyverno.io/title: Require Running as Non-Root User
+    policies.kyverno.io/category: Pod Security Standards (Restricted), Multi-Tenancy
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Tenant containers must run as non-root users to minimize
+      privilege escalation risks.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-run-as-non-root
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Containers must run as non-root user.
+          Set securityContext.runAsNonRoot=true or runAsUser to non-zero value.
+        anyPattern:
+          #! Either pod-level securityContext specifies non-root
+          - spec:
+              securityContext:
+                runAsNonRoot: true
+          #! Or every container specifies non-root
+          - spec:
+              containers:
+                - =(securityContext):
+                    =(runAsNonRoot): true
+
+---
+#! Policy 3: Drop Dangerous Capabilities
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-tenant-capabilities
+  annotations:
+    policies.kyverno.io/title: Restrict Linux Capabilities
+    policies.kyverno.io/category: Pod Security Standards (Restricted), Multi-Tenancy
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Tenant containers must drop ALL capabilities and may only add
+      back safe capabilities from an allowed list.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: drop-all-capabilities
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Containers must drop ALL capabilities.
+          Set securityContext.capabilities.drop=["ALL"]
+        foreach:
+          - list: "request.object.spec.[ephemeralContainers, initContainers, containers][]"
+            pattern:
+              securityContext:
+                capabilities:
+                  drop:
+                    - ALL
+
+    - name: restrict-added-capabilities
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Only safe capabilities may be added: NET_BIND_SERVICE, CHOWN, DAC_OVERRIDE, SETGID, SETUID.
+          Current added capabilities are not in the allowed list.
+        foreach:
+          - list: "request.object.spec.[ephemeralContainers, initContainers, containers][]"
+            deny:
+              conditions:
+                all:
+                  #! If capabilities.add exists
+                  - key: "{{ element.securityContext.capabilities.add || [] | length(@) }}"
+                    operator: GreaterThan
+                    value: 0
+                  #! And it contains non-allowed capabilities
+                  - key: "{{ element.securityContext.capabilities.add || [] }}"
+                    operator: AnyNotIn
+                    value:
+                      - NET_BIND_SERVICE
+                      - CHOWN
+                      - DAC_OVERRIDE
+                      - SETGID
+                      - SETUID
+
+---
+#! Policy 4: Restrict Volume Types
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-tenant-volume-types
+  annotations:
+    policies.kyverno.io/title: Restrict Volume Types
+    policies.kyverno.io/category: Pod Security Standards (Restricted), Multi-Tenancy
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Tenant pods may only use safe volume types. Host path volumes
+      and other dangerous volume types are blocked.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: restrict-volume-types
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Only these volume types are allowed:
+          configMap, emptyDir, secret, persistentVolumeClaim, projected, downwardAPI.
+          HostPath and other dangerous volume types are blocked.
+        foreach:
+          - list: "request.object.spec.volumes[]"
+            deny:
+              conditions:
+                any:
+                  #! Deny hostPath
+                  - key: "{{ element.keys(@) }}"
+                    operator: AnyIn
+                    value:
+                      - hostPath
+                      - gcePersistentDisk
+                      - awsElasticBlockStore
+                      - azureDisk
+                      - azureFile
+                      - flexVolume
+                      - flocker
+                      - nfs
+
+---
+#! Policy 5: Restrict Host Namespaces
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-tenant-host-namespaces
+  annotations:
+    policies.kyverno.io/title: Restrict Host Namespaces
+    policies.kyverno.io/category: Pod Security Standards (Restricted), Multi-Tenancy
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Tenant pods cannot share host namespaces (network, PID, IPC)
+      to maintain isolation from the node.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: deny-host-namespaces
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Sharing host namespaces is not allowed.
+          Set hostNetwork, hostPID, hostIPC to false.
+        pattern:
+          spec:
+            =(hostNetwork): false
+            =(hostPID): false
+            =(hostIPC): false
+
+---
+#! Policy 6: Restrict HostPorts
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-tenant-host-ports
+  annotations:
+    policies.kyverno.io/title: Restrict Host Ports
+    policies.kyverno.io/category: Pod Security Standards (Baseline), Multi-Tenancy
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Tenant containers cannot bind to host ports, preventing
+      port conflicts and privilege escalation.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: deny-host-ports
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Binding to host ports is not allowed.
+          Remove hostPort from container ports.
+        foreach:
+          - list: "request.object.spec.[ephemeralContainers, initContainers, containers][].ports[]"
+            deny:
+              conditions:
+                all:
+                  - key: "{{ element.hostPort || 0 }}"
+                    operator: GreaterThan
+                    value: 0
+
+---
+#! Policy 7: Require Seccomp Profile
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-tenant-seccomp-profile
+  annotations:
+    policies.kyverno.io/title: Require Seccomp Profile
+    policies.kyverno.io/category: Pod Security Standards (Restricted), Multi-Tenancy
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Tenant pods must use RuntimeDefault or Localhost seccomp profile
+      to restrict syscall access.
+spec:
+  #@ if data.values.tenant_policies.require_seccomp:
+  validationFailureAction: Enforce
+  #@ else:
+  validationFailureAction: Audit
+  #@ end
+  background: true
+  rules:
+    - name: require-seccomp
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Seccomp profile must be set to RuntimeDefault or Localhost.
+          Set securityContext.seccompProfile.type to RuntimeDefault.
+        anyPattern:
+          #! Pod-level seccomp
+          - spec:
+              securityContext:
+                seccompProfile:
+                  type: RuntimeDefault | Localhost
+          #! Or every container has seccomp
+          - spec:
+              containers:
+                - securityContext:
+                    seccompProfile:
+                      type: RuntimeDefault | Localhost
+
+---
+#! Policy 8: Restrict Sysctls
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-tenant-sysctls
+  annotations:
+    policies.kyverno.io/title: Restrict Sysctls
+    policies.kyverno.io/category: Pod Security Standards (Baseline), Multi-Tenancy
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Tenant pods may only set safe sysctls to prevent
+      affecting node stability or other tenants.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: restrict-sysctls
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          Only safe sysctls are allowed: kernel.shm*, net.ipv4.ip_local_port_range,
+          net.ipv4.tcp_syncookies, net.ipv4.ping_group_range
+        foreach:
+          - list: "request.object.spec.securityContext.sysctls[]"
+            deny:
+              conditions:
+                all:
+                  - key: "{{ element.name }}"
+                    operator: AnyNotIn
+                    value:
+                      - kernel.shm_rmid_forced
+                      - net.ipv4.ip_local_port_range
+                      - net.ipv4.tcp_syncookies
+                      - net.ipv4.ping_group_range

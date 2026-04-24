@@ -1,0 +1,323 @@
+#@ load("@ytt:data", "data")
+
+#! Kyverno Policy: Validate TenantOnboarding Custom Resources
+#!
+#! Enforces input validation for tenant onboarding requests to ensure
+#! security and compliance with platform standards.
+
+---
+#! Policy 1: Validate Tenant Name Format
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-tenant-name
+  annotations:
+    policies.kyverno.io/title: Validate Tenant Name Format
+    policies.kyverno.io/category: Multi-Tenancy, Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: TenantOnboarding
+    policies.kyverno.io/description: >-
+      Tenant names must be DNS-compliant (lowercase alphanumeric with hyphens)
+      and within length limits to ensure compatibility with IAM roles and Kubernetes resources.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: validate-tenant-name-format
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantOnboarding
+              selector:
+                matchLabels:
+                  platform.fedcore.io/validated: "!true"  #! Skip already validated
+      validate:
+        message: >-
+          Tenant name must be DNS-compliant: lowercase alphanumeric with hyphens,
+          1-30 characters, cannot start/end with hyphen.
+          Example: 'my-tenant-123'
+        pattern:
+          spec:
+            tenantName: "[a-z0-9]([-a-z0-9]*[a-z0-9])?"
+        deny:
+          conditions:
+            any:
+              #! Deny if length > 30
+              - key: "{{ request.object.spec.tenantName | length(@) }}"
+                operator: GreaterThan
+                value: 30
+              #! Deny if length < 1
+              - key: "{{ request.object.spec.tenantName | length(@) }}"
+                operator: LessThan
+                value: 1
+
+---
+#! Policy 2: Validate Quota Formats
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-tenant-quotas
+  annotations:
+    policies.kyverno.io/title: Validate Tenant Resource Quotas
+    policies.kyverno.io/category: Multi-Tenancy, Resource Management
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: TenantOnboarding
+    policies.kyverno.io/description: >-
+      Validates that quota values are in correct Kubernetes resource format
+      and within acceptable ranges.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: validate-namespace-quota
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantOnboarding
+      validate:
+        message: >-
+          Namespace quota must be between 1 and 100.
+          Current value: {{ request.object.spec.quotas.namespaces }}
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.quotas.namespaces }}"
+                operator: LessThan
+                value: 1
+              - key: "{{ request.object.spec.quotas.namespaces }}"
+                operator: GreaterThan
+                value: 100
+
+    - name: validate-pvc-quota
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantOnboarding
+      validate:
+        message: >-
+          PVC quota must be between 1 and 1000.
+          Current value: {{ request.object.spec.quotas.maxPVCs }}
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.quotas.maxPVCs }}"
+                operator: LessThan
+                value: 1
+              - key: "{{ request.object.spec.quotas.maxPVCs }}"
+                operator: GreaterThan
+                value: 1000
+
+    - name: validate-cpu-quota-format
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantOnboarding
+      validate:
+        message: >-
+          CPU quota must be a valid number (e.g., '100', '50').
+          Current value: {{ request.object.spec.quotas.cpu }}
+        pattern:
+          spec:
+            quotas:
+              cpu: "[0-9]+"
+
+    - name: validate-memory-quota-format
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantOnboarding
+      validate:
+        message: >-
+          Memory quota must be in format: <number>Mi|Gi|Ti (e.g., '200Gi', '512Mi').
+          Current value: {{ request.object.spec.quotas.memory }}
+        pattern:
+          spec:
+            quotas:
+              memory: "[0-9]+(Mi|Gi|Ti)"
+
+    - name: validate-storage-quota-format
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantOnboarding
+      validate:
+        message: >-
+          Storage quota must be in format: <number>Mi|Gi|Ti|Pi (e.g., '1Ti', '500Gi').
+          Current value: {{ request.object.spec.quotas.storage }}
+        pattern:
+          spec:
+            quotas:
+              storage: "[0-9]+(Mi|Gi|Ti|Pi)"
+
+---
+#! Policy 3: Validate Billing Information
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-tenant-billing
+  annotations:
+    policies.kyverno.io/title: Validate Tenant Billing Information
+    policies.kyverno.io/category: Multi-Tenancy, Compliance
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: TenantOnboarding
+    policies.kyverno.io/description: >-
+      Validates billing information format for cost tracking and chargeback.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: validate-cost-center-format
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantOnboarding
+      validate:
+        message: >-
+          Cost center must be 4-10 uppercase alphanumeric characters (e.g., 'CC12345').
+          Current value: {{ request.object.spec.billing.costCenter }}
+        pattern:
+          spec:
+            billing:
+              costCenter: "[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]*"
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.billing.costCenter | length(@) }}"
+                operator: LessThan
+                value: 4
+              - key: "{{ request.object.spec.billing.costCenter | length(@) }}"
+                operator: GreaterThan
+                value: 10
+
+    - name: validate-contact-email-format
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantOnboarding
+      validate:
+        message: >-
+          Billing contact must be a valid email address (e.g., 'billing@example.com').
+          Current value: {{ request.object.spec.billing.contact }}
+        pattern:
+          spec:
+            billing:
+              contact: "*@*.*"
+
+---
+#! Policy 4: Validate Owner Configuration
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-tenant-owners
+  annotations:
+    policies.kyverno.io/title: Validate Tenant Owners
+    policies.kyverno.io/category: Multi-Tenancy, Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: TenantOnboarding
+    policies.kyverno.io/description: >-
+      Ensures at least one owner is specified and owner kind is valid.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-at-least-one-owner
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantOnboarding
+      validate:
+        message: "At least one owner is required for tenant onboarding."
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.object.spec.owners | length(@) }}"
+                operator: LessThan
+                value: 1
+
+    - name: validate-owner-kind
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantOnboarding
+      validate:
+        message: >-
+          Owner kind must be one of: User, Group, ServiceAccount.
+          Invalid value found.
+        foreach:
+          - list: "request.object.spec.owners"
+            deny:
+              conditions:
+                all:
+                  - key: "{{ element.kind }}"
+                    operator: AnyNotIn
+                    value:
+                      - User
+                      - Group
+                      - ServiceAccount
+
+---
+#! Policy 5: Validate Settings
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-tenant-settings
+  annotations:
+    policies.kyverno.io/title: Validate Tenant Settings
+    policies.kyverno.io/category: Multi-Tenancy, Resource Management
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: TenantOnboarding
+    policies.kyverno.io/description: >-
+      Validates default resource limit settings are in correct format.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: validate-default-cpu-limit-format
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantOnboarding
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.settings.defaultCPULimit || '' }}"
+            operator: NotEquals
+            value: ""
+      validate:
+        message: >-
+          Default CPU limit must be in format: <number>m or <number> (e.g., '500m', '1').
+          Current value: {{ request.object.spec.settings.defaultCPULimit }}
+        pattern:
+          spec:
+            settings:
+              defaultCPULimit: "[0-9]+(m|[0-9]*)?"
+
+    - name: validate-default-memory-limit-format
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantOnboarding
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.settings.defaultMemoryLimit || '' }}"
+            operator: NotEquals
+            value: ""
+      validate:
+        message: >-
+          Default memory limit must be in format: <number>Mi|Gi (e.g., '512Mi', '1Gi').
+          Current value: {{ request.object.spec.settings.defaultMemoryLimit }}
+        pattern:
+          spec:
+            settings:
+              defaultMemoryLimit: "[0-9]+(Mi|Gi)"

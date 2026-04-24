@@ -1,0 +1,23 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! Azure-specific NGINX Ingress Controller configuration
+
+#! overlay-phase: pre-render
+---
+#@overlay/match by=overlay.subset({"name": "ingress-nginx"})
+---
+helm:
+  values:
+    controller:
+      #@overlay/match missing_ok=True
+      service:
+        #@overlay/match missing_ok=True
+        annotations:
+          #@overlay/match missing_ok=True
+          #! Use Azure Load Balancer Standard SKU
+          service.beta.kubernetes.io/azure-load-balancer-sku: "Standard"
+          #! External load balancer
+          service.beta.kubernetes.io/azure-load-balancer-internal: "false"
+          #! Enable TCP reset on idle timeout
+          service.beta.kubernetes.io/azure-load-balancer-tcp-idle-timeout: "4"

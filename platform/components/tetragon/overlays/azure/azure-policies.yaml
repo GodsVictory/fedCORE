@@ -1,0 +1,38 @@
+#@ load("@ytt:data", "data")
+
+#! Azure-Specific Tetragon TracingPolicies
+#!
+#! Adds Azure-specific security monitoring policies for Splunk correlation
+
+#! overlay-phase: post-render
+
+#! Azure-Specific TracingPolicy: Detect Managed Identity token access
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: azure-managed-identity-access
+  namespace: kube-system
+spec:
+  kprobes:
+  - call: "security_file_open"
+    syscall: false
+    args:
+    - index: 0
+      type: "file"
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "Prefix"
+        values:
+        #! Monitor access to Azure Workload Identity token
+        - "/var/run/secrets/azure/tokens/"
+      matchActions:
+      - action: Post  #! Log to Splunk
+      matchNamespaces:
+      #! Only monitor tenant namespaces
+      - operator: "NotIn"
+        values:
+        - "kube-system"
+        - "flux-system"
+        - "capsule-system"

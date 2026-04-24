@@ -1,0 +1,24 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! On-Premises Tetragon Configuration
+#!
+#! Adds on-premises specific environment variables to Tetragon via Helm values
+
+#! overlay-phase: pre-render
+---
+#@overlay/match by=overlay.subset({"name": "tetragon"})
+---
+helm:
+  values:
+    tetragon:
+      #@overlay/match missing_ok=True
+      extraEnv:
+        #@overlay/append
+        - name: CLOUD_PROVIDER
+          value: "onprem"
+        #@ if data.values.datacenter:
+        #@overlay/append
+        - name: DATACENTER
+          value: #@ data.values.datacenter
+        #@ end

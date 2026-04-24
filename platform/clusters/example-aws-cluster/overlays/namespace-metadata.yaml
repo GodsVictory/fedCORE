@@ -1,0 +1,23 @@
+#@ load("@ytt:overlay", "overlay")
+
+#! Match plain Namespace resources
+#@overlay/match by=overlay.subset({"kind": "Namespace"}), expects="0+"
+---
+metadata:
+  #@overlay/match missing_ok=True
+  labels:
+    #@overlay/match missing_ok=True
+    app.kubernetes.io/managed-by: platform
+
+#! Match ResourceGraphDefinition resources that create namespaces
+#@overlay/match by=overlay.subset({"kind": "ResourceGraphDefinition"}), expects="0+"
+---
+spec:
+  resources:
+    #@overlay/match by=overlay.subset({"id": "targetNamespace"}), expects="0+"
+    - template:
+        metadata:
+          #@overlay/match missing_ok=True
+          labels:
+            #@overlay/match missing_ok=True
+            app.kubernetes.io/managed-by: platform

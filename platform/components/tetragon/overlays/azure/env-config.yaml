@@ -1,0 +1,27 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! Azure-Specific Tetragon Configuration
+#!
+#! Adds Azure-specific environment variables to Tetragon via Helm values
+
+#! overlay-phase: pre-render
+---
+#@overlay/match by=overlay.subset({"name": "tetragon"})
+---
+helm:
+  values:
+    tetragon:
+      #@overlay/match missing_ok=True
+      extraEnv:
+        #@overlay/append
+        - name: CLOUD_PROVIDER
+          value: "azure"
+        #@overlay/append
+        - name: AZURE_REGION
+          value: #@ data.values.region
+        #@ if data.values.azure:
+        #@overlay/append
+        - name: AZURE_SUBSCRIPTION_ID
+          value: #@ data.values.azure.subscription_id
+        #@ end

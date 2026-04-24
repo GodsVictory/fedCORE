@@ -1,0 +1,291 @@
+#@ load("@ytt:data", "data")
+---
+#! Policy: Validate VirtualService Gateway References
+#!
+#! Ensures VirtualServices reference either the shared gateway or a tenant-owned gateway
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-virtualservice-gateway-reference
+  annotations:
+    policies.kyverno.io/title: Validate VirtualService Gateway References
+    policies.kyverno.io/category: Istio, Multi-Tenancy, Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: VirtualService
+    policies.kyverno.io/description: >-
+      Ensures VirtualServices created by tenants reference either the shared
+      fedcore-gateway in istio-system or a gateway in their own namespace.
+      Prevents cross-tenant gateway hijacking.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-valid-gateway-reference
+      match:
+        any:
+          - resources:
+              kinds:
+                - VirtualService
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          VirtualService must reference either 'istio-system/fedcore-gateway' (shared)
+          or a gateway in the same namespace or tenant's gateway namespace.
+          Gateway references: {{ request.object.spec.gateways }}
+        deny:
+          conditions:
+            any:
+              #! Allow if referencing shared gateway
+              - key: "{{ request.object.spec.gateways[?@ == 'istio-system/fedcore-gateway'] | length(@) }}"
+                operator: GreaterThan
+                value: 0
+              #! Allow if referencing gateway in same namespace
+              - key: "{{ request.object.spec.gateways[?starts_with(@, '{{request.namespace}}/')] | length(@) }}"
+                operator: GreaterThan
+                value: 0
+              #! Allow if referencing tenant's ingress namespace
+              - key: "{{ request.object.spec.gateways[?contains(@, '-ingress/')] | length(@) }}"
+                operator: GreaterThan
+                value: 0
+
+---
+#! Policy: Validate VirtualService Hostname Pattern
+#!
+#! Ensures hostnames match the cluster's ingress domain
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-virtualservice-hostname
+  annotations:
+    policies.kyverno.io/title: Validate VirtualService Hostname Pattern
+    policies.kyverno.io/category: Istio, Multi-Tenancy
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: VirtualService
+    policies.kyverno.io/description: >-
+      Validates that VirtualService hostnames match the cluster's ingress domain.
+      Prevents typos and ensures DNS consistency.
+spec:
+  validationFailureAction: Audit  #! Audit mode - warn but don't block
+  background: true
+  rules:
+    - name: check-hostname-pattern
+      match:
+        any:
+          - resources:
+              kinds:
+                - VirtualService
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          VirtualService hostnames should match the cluster ingress domain pattern.
+          Expected: *.{{data.values.ingress_domain}}
+          Actual: {{ request.object.spec.hosts }}
+        pattern:
+          spec:
+            hosts:
+              - #@ "*." + data.values.ingress_domain + " | *"
+
+---
+#! Policy: Prevent Gateway Modification in istio-system
+#!
+#! Prevents tenants from modifying the shared gateway
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: protect-shared-gateway
+  annotations:
+    policies.kyverno.io/title: Protect Shared Gateway
+    policies.kyverno.io/category: Istio, Multi-Tenancy, Security
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: Gateway
+    policies.kyverno.io/description: >-
+      Prevents unauthorized modification of the shared fedcore-gateway.
+      Only platform administrators can modify the shared gateway.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: block-shared-gateway-modification
+      match:
+        any:
+          - resources:
+              kinds:
+                - Gateway
+              names:
+                - fedcore-gateway
+              namespaces:
+                - istio-system
+      exclude:
+        any:
+          #! Allow Flux to manage the gateway
+          - subjects:
+              - kind: ServiceAccount
+                name: flux-*
+                namespace: flux-system
+          #! Allow Kyverno itself
+          - subjects:
+              - kind: ServiceAccount
+                name: kyverno-*
+                namespace: kyverno
+          #! Allow cluster admins
+          - clusterRoles:
+              - cluster-admin
+      validate:
+        message: >-
+          The shared fedcore-gateway in istio-system is platform-managed.
+          Tenants cannot modify this resource. Create a dedicated gateway using TenantGateway CRD.
+        deny: {}
+
+---
+#! Policy: Validate TenantGateway Ownership
+#!
+#! Ensures TenantGateway resources are created in tenant-owned namespaces
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-tenant-gateway-ownership
+  annotations:
+    policies.kyverno.io/title: Validate TenantGateway Ownership
+    policies.kyverno.io/category: Istio, Multi-Tenancy, Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: TenantGateway
+    policies.kyverno.io/description: >-
+      Ensures TenantGateway resources are created in namespaces owned by the
+      specified tenant. Prevents tenant impersonation.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: verify-tenant-ownership
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantGateway
+      validate:
+        message: >-
+          TenantGateway must be created in a namespace owned by the tenant.
+          Tenant '{{ request.object.spec.tenantName }}' must match namespace label
+          'capsule.clastix.io/tenant'.
+        deny:
+          conditions:
+            any:
+              #! Verify namespace has matching tenant label
+              - key: "{{ request.namespace.metadata.labels.\"capsule.clastix.io/tenant\" }}"
+                operator: NotEquals
+                value: "{{ request.object.spec.tenantName }}"
+
+---
+#! Policy: Auto-Label Gateway Resources
+#!
+#! Automatically adds tenant labels to gateway pods for observability
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: auto-label-gateway-resources
+  annotations:
+    policies.kyverno.io/title: Auto-Label Gateway Resources
+    policies.kyverno.io/category: Istio, Observability
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Automatically adds tenant and gateway labels to gateway pods
+      for improved observability in metrics and logs.
+spec:
+  background: false
+  rules:
+    - name: add-gateway-labels
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  istio: ingressgateway
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              #! Propagate tenant label from namespace
+              +(istio.io/tenant): "{{ request.namespace.metadata.labels.\"tenant\" || 'shared' }}"
+              #! Add cluster identifier
+              +(istio.io/cluster): #@ data.values.cluster_name
+
+---
+#! Policy: Validate Gateway Resource Limits
+#!
+#! Ensures TenantGateway resources don't exceed platform limits
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-gateway-resource-limits
+  annotations:
+    policies.kyverno.io/title: Validate Gateway Resource Limits
+    policies.kyverno.io/category: Resource Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: TenantGateway
+    policies.kyverno.io/description: >-
+      Validates that TenantGateway resource requests and limits are within
+      acceptable ranges to prevent resource exhaustion.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: check-cpu-limits
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantGateway
+      validate:
+        message: >-
+          Gateway CPU limits must not exceed 4000m per replica.
+          Requested: {{ request.object.spec.resources.limits.cpu }}
+        deny:
+          conditions:
+            any:
+              #! Check CPU limit (convert to millicores)
+              - key: "{{ request.object.spec.resources.limits.cpu }}"
+                operator: GreaterThan
+                value: "4000m"
+
+    - name: check-memory-limits
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantGateway
+      validate:
+        message: >-
+          Gateway memory limits must not exceed 2Gi per replica.
+          Requested: {{ request.object.spec.resources.limits.memory }}
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.resources.limits.memory }}"
+                operator: GreaterThan
+                value: "2Gi"
+
+    - name: check-max-replicas
+      match:
+        any:
+          - resources:
+              kinds:
+                - TenantGateway
+      validate:
+        message: >-
+          Gateway autoscaling maxReplicas must not exceed 10.
+          Requested: {{ request.object.spec.autoscaling.maxReplicas }}
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.autoscaling.maxReplicas }}"
+                operator: GreaterThan
+                value: 10

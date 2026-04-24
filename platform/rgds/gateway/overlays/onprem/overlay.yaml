@@ -1,0 +1,26 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! On-Premises Gateway RGD overlay
+#! Configures for MetalLB or NodePort access
+
+#@overlay/match by=overlay.subset({"kind": "ResourceGraphDefinition", "metadata": {"name": "tenant-gateway"}})
+---
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+spec:
+  #@overlay/match missing_ok=True
+  resources:
+    #! Configure service for on-prem (MetalLB or NodePort)
+    #@overlay/match by="id"
+    - id: gateway-service
+      template:
+        metadata:
+          #@overlay/match missing_ok=True
+          annotations:
+            #! MetalLB will use this annotation if available
+            metallb.universe.tf/allow-shared-ip: "tenant-gateway-${schema.spec.tenantName}"
+        spec:
+          #! Use NodePort if MetalLB is not available
+          #! Change to LoadBalancer if MetalLB is configured
+          type: LoadBalancer

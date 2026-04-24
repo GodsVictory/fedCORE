@@ -1,0 +1,83 @@
+#@data/values
+---
+#! Physical facts
+cluster_name: "my-eks-cluster"
+cloud: aws
+region: us-east-1
+environment: dev
+overlays:
+  - aws
+  - dev
+ingress_domain: "api.example.com"
+
+#! AWS-specific configuration (for Pod Identity with KRO tenant onboarding)
+aws:
+  account_id: "123456789012"
+
+#! AppDynamics Configuration
+appdynamics:
+  ip_ranges: []
+
+#! Monitoring & Observability
+monitoring:
+  enabled: false
+
+#! Istio Gateway configuration
+#! Scheduling (node selectors, tolerations) handled by cluster-wide overlay
+istio_gateway:
+  name: "mt-istio-ingress"
+  gateway_name: "main-gateway"
+  namespace: "istio-ingress"
+
+#! Tenant Policies (Multi-Tenancy with Capsule + Kyverno)
+tenant_policies:
+  allowed_registries:
+    - "your-registry.example.com/"
+
+#! Tenants (Application teams/projects on this cluster)
+#!
+#! EKS Access Entry Mappings:
+#! Access entries map IAM roles to Kubernetes groups for cluster authentication.
+#! The groups are then granted namespace access via RoleBindings.
+#!
+#! IAM Role -> K8s Group -> ClusterRole:
+#! - user-Admin -> team-admins -> admin (full namespace access)
+#! - user-DevOps -> devops-users -> edit (read/write, no RBAC)
+#! - user-ViewOnly -> view-only-users -> view (read-only)
+tenants:
+  - name: team-alpha
+    type: namespace
+    description: "Example team namespace"
+    aws_account_id: "123456789012"
+    owners:
+      - kind: Group
+        name: team-alpha-admins@example.com
+    cost_center: "engineering"
+    role_bindings:
+      - kind: Group
+        name: team-admins
+        role: admin
+        iamRoleName: "user-Admin"
+
+      - kind: Group
+        name: devops-users
+        role: edit
+        iamRoleName: "user-DevOps"
+
+      - kind: Group
+        name: view-only-users
+        role: view
+        iamRoleName: "user-ViewOnly"
+
+#! Bootstrap Configuration (Secrets and ConfigMaps for Flux)
+dockerconfigjson: "${OCI_DOCKERCONFIG_JSON}"  #! Substituted by envsubst during bootstrap
+
+#! Component Deployments (Unified array for all OCI artifacts)
+#! All deployable artifacts: platform infrastructure, custom resources, and applications
+#! These are deployed as versioned OCI artifacts via Flux
+components:
+- name: kro
+- name: headlamp
+- name: namespace
+- name: tenant-instances
+- name: audit-service-account

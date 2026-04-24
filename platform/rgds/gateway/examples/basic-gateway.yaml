@@ -1,0 +1,61 @@
+#! Basic Tenant Gateway Example
+#!
+#! Creates a dedicated ingress gateway for the 'acme' tenant with default settings.
+#!
+#! Prerequisites:
+#! 1. Tenant 'acme' must exist (created via TenantOnboarding)
+#! 2. TLS certificate secret 'acme-tls-cert' must be created manually in acme-ingress namespace
+#!    kubectl create secret tls acme-tls-cert \
+#!      --cert=acme.crt --key=acme.key \
+#!      -n acme-ingress
+
+---
+apiVersion: gateway.fedcore.io/v1alpha1
+kind: TenantGateway
+metadata:
+  name: acme-gateway
+  namespace: acme-cicd
+spec:
+  tenantName: acme
+  gatewayName: acme-gateway
+  namespace: acme-ingress
+
+  #! Default replicas (2)
+  replicas: 2
+
+  #! TLS secret (must be created manually before applying)
+  tlsSecretName: acme-tls-cert
+
+  #! Hosts this gateway will serve
+  hosts:
+  - "*.acme.prod.us-east-1.fedcore.io"
+  - "acme.prod.us-east-1.fedcore.io"
+
+  #! Default autoscaling (enabled, 2-5 replicas)
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilization: 80
+
+---
+#! Example VirtualService using the dedicated gateway
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: my-app
+  namespace: acme-frontend
+spec:
+  hosts:
+  - "my-app.acme.prod.us-east-1.fedcore.io"
+  gateways:
+  - acme-ingress/acme-gateway  #! Reference the tenant gateway
+  http:
+  - match:
+    - uri:
+        prefix: "/"
+    route:
+    - destination:
+        host: my-app.acme-frontend.svc.cluster.local
+        port:
+          number: 8080

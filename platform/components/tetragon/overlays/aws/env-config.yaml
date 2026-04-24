@@ -1,0 +1,26 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! AWS-Specific Tetragon Configuration
+#!
+#! Adds AWS-specific environment variables to Tetragon via Helm values
+
+#! overlay-phase: pre-render
+#! Overlay to add AWS environment variables to Tetragon via Helm values
+---
+#@overlay/match by=overlay.subset({"name": "tetragon"})
+---
+helm:
+  values:
+    tetragon:
+      #@overlay/match missing_ok=True
+      extraEnv:
+        #@overlay/append
+        - name: CLOUD_PROVIDER
+          value: "aws"
+        #@overlay/append
+        - name: AWS_REGION
+          value: #@ data.values.region
+        #@overlay/append
+        - name: AWS_ACCOUNT_ID
+          value: #@ data.values.aws.account_id if hasattr(data.values, "aws") else ""

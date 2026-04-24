@@ -1,0 +1,46 @@
+#@ load("@ytt:data", "data")
+
+---
+#! Production cluster overlay: Require resource limits on all containers
+#! This prevents resource exhaustion and ensures predictable scheduling
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-limits
+  labels:
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+    platform.fedcore.io/environment: production
+    platform.fedcore.io/overlay: cluster-specific
+  annotations:
+    policies.kyverno.io/title: Require Resource Limits
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      All containers in production must specify CPU and memory limits to prevent
+      resource exhaustion and ensure predictable scheduling behavior.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+  - name: validate-resources
+    match:
+      any:
+      - resources:
+          kinds:
+          - Pod
+    validate:
+      message: >-
+        All containers must define resource limits (cpu and memory).
+        Production workloads require explicit resource constraints.
+      pattern:
+        spec:
+          containers:
+          - resources:
+              limits:
+                memory: "?*"
+                cpu: "?*"
+              requests:
+                memory: "?*"
+                cpu: "?*"

@@ -1,0 +1,50 @@
+#@ load("@ytt:overlay", "overlay")
+
+#! Platform Workload Tolerations
+#! ===============================
+#! This overlay patches ALL Deployments, DaemonSets, and StatefulSets
+#! to add tolerations and nodeSelector for platform-dedicated nodes.
+#!
+#! Applied during component building phase via ytt - no need to specify
+#! namespaces or individual resources, just patch all workloads.
+
+#! Define the platform toleration
+#@ def platform_tolerations():
+- key: workload-type
+  operator: Equal
+  value: platform
+  effect: NoSchedule
+#@ end
+
+#! ============================================================================
+#! Patch ALL Deployments
+#! ============================================================================
+#@overlay/match by=overlay.subset({"kind": "Deployment"}), expects="0+"
+---
+spec:
+  template:
+    spec:
+      #@overlay/match missing_ok=True
+      tolerations: #@ platform_tolerations()
+
+#! ============================================================================
+#! Patch ALL DaemonSets
+#! ============================================================================
+#@overlay/match by=overlay.subset({"kind": "DaemonSet"}), expects="0+"
+---
+spec:
+  template:
+    spec:
+      #@overlay/match missing_ok=True
+      tolerations: #@ platform_tolerations()
+
+#! ============================================================================
+#! Patch ALL StatefulSets
+#! ============================================================================
+#@overlay/match by=overlay.subset({"kind": "StatefulSet"}), expects="0+"
+---
+spec:
+  template:
+    spec:
+      #@overlay/match missing_ok=True
+      tolerations: #@ platform_tolerations()

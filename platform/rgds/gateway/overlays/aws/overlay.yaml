@@ -1,0 +1,33 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! AWS-specific Gateway RGD overlay
+#! Adds Network Load Balancer annotations and cost allocation tags
+
+#@overlay/match by=overlay.subset({"kind": "ResourceGraphDefinition", "metadata": {"name": "tenant-gateway"}})
+---
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+spec:
+  #@overlay/match missing_ok=True
+  resources:
+    #! Add AWS-specific annotations to the gateway service
+    #@overlay/match by="id"
+    - id: gateway-service
+      template:
+        metadata:
+          #@overlay/match missing_ok=True
+          annotations:
+            #! Use AWS Network Load Balancer (Layer 4)
+            service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+            #! External (internet-facing) load balancer
+            service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+            #! Enable cross-zone load balancing
+            service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+            #! Connection draining
+            service.beta.kubernetes.io/aws-load-balancer-connection-draining-enabled: "true"
+            service.beta.kubernetes.io/aws-load-balancer-connection-draining-timeout: "60"
+            #! Backend protocol (TCP, no SSL termination at NLB)
+            service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "tcp"
+            #! Cost allocation tags (uses CEL to inject tenant info)
+            service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags: #@ "cluster=" + data.values.cluster_name + ",tenant=${schema.spec.tenantName},gateway=${schema.spec.gatewayName},managed-by=fedcore"

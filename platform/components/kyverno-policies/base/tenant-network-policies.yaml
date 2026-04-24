@@ -1,0 +1,46 @@
+#@ load("@ytt:data", "data")
+---
+#! Policy: Validate No Permissive Network Policies
+#!
+#! Prevent tenants from creating NetworkPolicies that bypass isolation
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-tenant-network-policies
+  annotations:
+    policies.kyverno.io/title: Prevent Permissive Network Policies
+    policies.kyverno.io/category: Multi-Tenancy, Network Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: NetworkPolicy
+    policies.kyverno.io/description: >-
+      Prevents tenants from creating overly permissive NetworkPolicies
+      that would allow access to other tenants or system namespaces.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: block-cross-tenant-access
+      match:
+        any:
+          - resources:
+              kinds:
+                - NetworkPolicy
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      validate:
+        message: >-
+          NetworkPolicies cannot allow access to other tenants or system namespaces.
+          Use namespaceSelector with your tenant label only.
+        deny:
+          conditions:
+            any:
+              #! Deny if trying to select namespaces without tenant restriction
+              - key: "{{ request.object.spec.ingress[?@.from[].namespaceSelector].from[].namespaceSelector | length(@) }}"
+                operator: GreaterThan
+                value: 0
+                #! And the selector doesn't include the tenant label
+              - key: "{{ request.object.spec.ingress[?@.from[].namespaceSelector].from[].namespaceSelector.matchLabels.\"capsule.clastix.io/tenant\" || '' }}"
+                operator: Equals
+                value: ""

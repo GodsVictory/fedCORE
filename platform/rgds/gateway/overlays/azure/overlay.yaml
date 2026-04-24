@@ -1,0 +1,26 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! Azure-specific Gateway RGD overlay
+#! Adds Azure Load Balancer annotations
+
+#@overlay/match by=overlay.subset({"kind": "ResourceGraphDefinition", "metadata": {"name": "tenant-gateway"}})
+---
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+spec:
+  #@overlay/match missing_ok=True
+  resources:
+    #! Add Azure-specific annotations to the gateway service
+    #@overlay/match by="id"
+    - id: gateway-service
+      template:
+        metadata:
+          #@overlay/match missing_ok=True
+          annotations:
+            #! Use Azure Load Balancer Standard SKU
+            service.beta.kubernetes.io/azure-load-balancer-sku: "Standard"
+            #! External load balancer
+            service.beta.kubernetes.io/azure-load-balancer-internal: "false"
+            #! Enable TCP reset on idle timeout
+            service.beta.kubernetes.io/azure-load-balancer-tcp-idle-timeout: "4"

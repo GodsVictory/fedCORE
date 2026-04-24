@@ -1,0 +1,65 @@
+#@ load("@ytt:data", "data")
+
+#! AWS-Specific Tetragon TracingPolicies
+#!
+#! Adds AWS-specific security monitoring policies for Splunk correlation
+
+#! overlay-phase: post-render
+
+#! AWS-Specific TracingPolicy: Detect IAM credential access
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: aws-iam-credential-access
+  namespace: kube-system
+spec:
+  kprobes:
+  - call: "security_file_open"
+    syscall: false
+    args:
+    - index: 0
+      type: "file"
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "Prefix"
+        values:
+        #! Monitor access to EC2 instance metadata service
+        #! Note: This monitors file opens; network access needs different approach
+        - "/var/lib/aws/"
+        - "/root/.aws/"
+        - "/home/*/.aws/"
+      matchActions:
+      - action: Post  #! Log to Splunk
+
+---
+#! AWS-Specific TracingPolicy: Detect Pod Identity credential access
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: aws-pod-identity-access
+  namespace: kube-system
+spec:
+  kprobes:
+  - call: "security_file_open"
+    syscall: false
+    args:
+    - index: 0
+      type: "file"
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "Equal"
+        values:
+        #! Monitor access to Pod Identity service account token
+        - "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"
+      matchActions:
+      - action: Post  #! Log to Splunk
+      matchNamespaces:
+      #! Only monitor tenant namespaces
+      - operator: "NotIn"
+        values:
+        - "kube-system"
+        - "flux-system"
+        - "capsule-system"

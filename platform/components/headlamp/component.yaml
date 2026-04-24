@@ -15,7 +15,7 @@ helm:
   #! Values for helm template
   values:
     image:
-      registry: registry.example.com
+      registry: #@ data.values.oci_registry
       repository: headlamp-k8s/headlamp
 
     #! Replica configuration

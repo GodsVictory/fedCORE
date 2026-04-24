@@ -1,0 +1,43 @@
+#! High-Traffic Tenant Gateway Example
+#!
+#! Creates a dedicated gateway with higher resource limits and aggressive autoscaling
+#! for tenants with significant traffic requirements.
+
+---
+apiVersion: gateway.fedcore.io/v1alpha1
+kind: TenantGateway
+metadata:
+  name: enterprise-gateway
+  namespace: enterprise-cicd
+spec:
+  tenantName: enterprise
+  gatewayName: enterprise-gateway
+  namespace: enterprise-ingress
+
+  #! Higher baseline replicas
+  replicas: 3
+
+  #! Increased resource limits
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "4000m"
+      memory: "2Gi"
+
+  #! Aggressive autoscaling
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilization: 70  #! Scale earlier
+
+  #! TLS configuration
+  tlsSecretName: enterprise-tls-cert
+
+  #! Multiple host patterns
+  hosts:
+  - "*.enterprise.prod.us-east-1.fedcore.io"
+  - "*.api.enterprise.prod.us-east-1.fedcore.io"
+  - "enterprise.prod.us-east-1.fedcore.io"
