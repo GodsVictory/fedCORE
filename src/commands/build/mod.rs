@@ -104,6 +104,22 @@ impl PushConfig {
     }
 }
 
+fn print_dist_manifests(entries: &[crate::types::BuildMatrixEntry]) -> Result<()> {
+    let mut paths: Vec<_> = entries
+        .iter()
+        .map(|e| format!("{}/{}.yaml", crate::paths::DIST_DIR, e.target_name))
+        .collect();
+    paths.sort();
+    for path in &paths {
+        let content = std::fs::read_to_string(path)?;
+        if !content.is_empty() {
+            println!("---");
+            print!("{}", content);
+        }
+    }
+    Ok(())
+}
+
 pub fn execute(args: BuildArgs) -> Result<()> {
     use crate::output;
 
@@ -121,12 +137,16 @@ pub fn execute(args: BuildArgs) -> Result<()> {
         let matrix = build_all_artifacts()?;
         if let Some(cfg) = push_cfg {
             cfg.push(&matrix.build_matrix)?;
+        } else {
+            print_dist_manifests(&matrix.build_matrix)?;
         }
     } else if args.artifact.is_none() {
         let cluster_dir = args.cluster.unwrap();
         let entries = build_cluster_artifacts(&cluster_dir)?;
         if let Some(cfg) = push_cfg {
             cfg.push(&entries)?;
+        } else {
+            print_dist_manifests(&entries)?;
         }
     } else {
         let artifact_path = args.artifact.unwrap();
