@@ -151,20 +151,19 @@ ytt \
   -f platform/clusters/schema.yaml \
   -f $CLUSTER/cluster.yaml \
   -f $ARTIFACT/component.yaml \
+  -f platform/overlays/ \
   > $TMPDIR/component-merged.yaml
 ```
 
-This resolves all `data.values.*` references in `component.yaml`. For example, `data.values.helm_repositories.use_mirror` and `data.values.monitoring.enabled` are evaluated against the cluster's actual configuration.
+This resolves all `data.values.*` references in `component.yaml`. For example, `data.values.monitoring.enabled` is evaluated against the cluster's actual configuration. Platform overlays (from `platform/overlays/`) are applied during this step — for example, the chart-repo overlay injects `resolvedChartRef` based on the cluster's `helm_repositories` config.
 
 **Output** (`component-merged.yaml`) — a plain YAML with all ytt expressions resolved:
 ```yaml
-name: capsule
-type: helm
 helm:
   sourceRepo: https://projectcapsule.github.io/charts
   chart: capsule
   version: "0.12.4"
-  mirrorRepo: https://projectcapsule.github.io/charts   # resolved from data.values
+  resolvedChartRef: oci://nexus.example.com/fedcore/helm-charts  # set when use_mirror=true, empty otherwise
   release:
     name: capsule
     namespace: capsule-system
@@ -187,10 +186,13 @@ helm:
 Extract the chart info from the merged component and run `helm template`:
 
 ```bash
+# Determine chart source: resolvedChartRef if mirrored, sourceRepo if not
+CHART_REF=$(yq '.helm.resolvedChartRef // .helm.sourceRepo' $TMPDIR/component-merged.yaml)
+CHART=$(yq '.helm.chart' $TMPDIR/component-merged.yaml)
+VERSION=$(yq '.helm.version' $TMPDIR/component-merged.yaml)
+
 # Pull the chart (cached after first download)
-helm pull https://projectcapsule.github.io/charts/capsule \
-  --version 0.12.4 \
-  --destination .cache/helm-charts
+helm pull $CHART_REF/$CHART --version $VERSION --destination .cache/helm-charts
 
 # Extract the values section from the merged component into a values file
 # (in practice the CLI does this with serde, but you can use yq)
@@ -245,12 +247,15 @@ ARTIFACT=platform/components/capsule
 CLUSTER=platform/clusters/aws-example-usgw1-dev-app
 T=$(mktemp -d)
 
-# 1. Pre-render: resolve data values
-ytt -f platform/clusters/schema.yaml -f $CLUSTER/cluster.yaml -f $ARTIFACT/component.yaml > $T/component-merged.yaml
+# 1. Pre-render: resolve data values + platform overlays
+ytt -f platform/clusters/schema.yaml -f $CLUSTER/cluster.yaml -f $ARTIFACT/component.yaml -f platform/overlays/ > $T/component-merged.yaml
 
-# 2. Render: helm template
+# 2. Render: helm template (resolvedChartRef if mirrored, sourceRepo if not)
+CHART_REF=$(yq '.helm.resolvedChartRef // .helm.sourceRepo' $T/component-merged.yaml)
+CHART=$(yq '.helm.chart' $T/component-merged.yaml)
+VERSION=$(yq '.helm.version' $T/component-merged.yaml)
 yq '.helm.values' $T/component-merged.yaml > $T/values.yaml
-helm pull https://projectcapsule.github.io/charts/capsule --version 0.12.4 --destination $T
+helm pull $CHART_REF/$CHART --version $VERSION --destination $T
 helm template capsule $T/capsule-0.12.4.tgz --namespace capsule-system --values $T/values.yaml > $T/helm-rendered.yaml
 
 # 3. Merge base manifests

@@ -27,9 +27,11 @@ fedcore helm-manage --dir ~/helm-charts --push
 ### 3. Enable in Cluster
 
 ```yaml
-# platform/clusters/your-cluster/values.yaml
+# platform/clusters/your-cluster/cluster.yaml
 helm_repositories:
   use_mirror: true
+  oci_registry: "nexus.example.com"
+  chart_repo: "fedcore/helm-charts"
 ```
 
 Deploy:
@@ -175,18 +177,22 @@ helm registry logout registry.example.com
 ### Standard Configuration
 
 ```yaml
-# platform/clusters/your-cluster/values.yaml
+# platform/clusters/your-cluster/cluster.yaml
 helm_repositories:
   use_mirror: true
-  # Uses default: oci://registry.example.com/fedcore/helm-charts
+  oci_registry: "nexus.example.com"
+  chart_repo: "fedcore/helm-charts"
+  # Charts pulled from: oci://nexus.example.com/fedcore/helm-charts/{chart}:{version}
+  # Images pulled from: nexus.example.com/{image-path}
 ```
 
-### Custom OCI Registry
+### Custom Registry
 
 ```yaml
 helm_repositories:
   use_mirror: true
-  oci_registry_url: "oci://custom-registry.example.com/helm-charts"
+  oci_registry: "custom-registry.example.com"
+  chart_repo: "my-org/helm-charts"
 ```
 
 ### Use Upstream (Testing)
@@ -194,6 +200,8 @@ helm_repositories:
 ```yaml
 helm_repositories:
   use_mirror: false
+  # Charts pulled directly from upstream sourceRepo in each component.yaml
+  # Images use chart defaults (public registries)
 ```
 
 ---
