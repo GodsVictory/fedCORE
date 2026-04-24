@@ -59,7 +59,7 @@ pub fn execute(registry: Option<&str>) -> Result<()> {
 
         match run_cmd(
             "crane",
-            &["copy", "--all-platforms", source_image, &target_image],
+            &["copy", "--platform=all", source_image, &target_image],
         ) {
             Ok(_) => output::progress_done(true),
             Err(e) => {
