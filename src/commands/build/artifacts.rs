@@ -112,6 +112,7 @@ pub fn build_cluster_artifacts(cluster_dir: &str) -> Result<Vec<BuildMatrixEntry
 
     let pb = output::progress_bar(artifact_count as u64);
     let failures = Mutex::new(Vec::<TaskFailure>::new());
+    let built = Mutex::new(Vec::<String>::new());
 
     cluster_artifacts.par_iter().for_each(|artifact| {
         let component_name = Path::new(&artifact.artifact_path)
@@ -127,6 +128,12 @@ pub fn build_cluster_artifacts(cluster_dir: &str) -> Result<Vec<BuildMatrixEntry
                 &artifact.target_name,
                 format!("{}", e),
             ));
+        } else {
+            built.lock().unwrap().push(format!(
+                "{}/{}.yaml",
+                paths::DIST_DIR,
+                artifact.target_name
+            ));
         }
 
         pb.inc(1);
@@ -135,6 +142,11 @@ pub fn build_cluster_artifacts(cluster_dir: &str) -> Result<Vec<BuildMatrixEntry
     pb.finish_and_clear();
 
     let failures = failures.into_inner().unwrap();
+    let mut built = built.into_inner().unwrap();
+    built.sort();
+    for path in &built {
+        output::item_ok(path);
+    }
     if failures.is_empty() {
         output::done(&format!(
             "Built {} components for {}",
@@ -164,6 +176,7 @@ pub fn build_all_artifacts() -> Result<BuildMatrix> {
 
     let pb = output::progress_bar(artifact_count as u64);
     let failures = Mutex::new(Vec::<TaskFailure>::new());
+    let built = Mutex::new(Vec::<String>::new());
 
     matrix.build_matrix.par_iter().for_each(|artifact| {
         pb.set_message(artifact.target_name.clone());
@@ -173,6 +186,12 @@ pub fn build_all_artifacts() -> Result<BuildMatrix> {
                 &artifact.target_name,
                 format!("{}", e),
             ));
+        } else {
+            built.lock().unwrap().push(format!(
+                "{}/{}.yaml",
+                paths::DIST_DIR,
+                artifact.target_name
+            ));
         }
 
         pb.inc(1);
@@ -181,6 +200,11 @@ pub fn build_all_artifacts() -> Result<BuildMatrix> {
     pb.finish_and_clear();
 
     let failures = failures.into_inner().unwrap();
+    let mut built = built.into_inner().unwrap();
+    built.sort();
+    for path in &built {
+        output::item_ok(path);
+    }
     if failures.is_empty() {
         output::done(&format!("Built {} artifacts", artifact_count));
     } else {
