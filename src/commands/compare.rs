@@ -14,6 +14,7 @@ pub fn execute(
     targets: Vec<String>,
     artifact: Option<String>,
     cluster: Option<String>,
+    id: Option<String>,
     context: Option<String>,
     namespace: Option<String>,
     registry: Option<String>,
@@ -36,14 +37,6 @@ pub fn execute(
             );
         }
 
-        output::section("Building local artifact");
-        let content = build::build_single_artifact(&artifact_path, &cluster_dir, false)
-            .context("Local build failed")?;
-        output::item_ok("Local build complete");
-
-        let local_dir = tempfile::tempdir()?;
-        fs::write(local_dir.path().join("platform.yaml"), &content)?;
-
         output::section("Fetching remote artifact");
         let remote_dir = inspect::resolve_target(
             &targets[0],
@@ -54,7 +47,28 @@ pub fn execute(
             password,
         )?;
 
-        diff_dirs(local_dir.path(), remote_dir.path())
+        output::section("Building local artifact");
+        let mut entries: Vec<_> = crate::commands::matrix::discover_cluster_artifacts(&cluster_dir)?
+            .into_iter()
+            .filter(|e| e.artifact_path == artifact_path)
+            .collect();
+        if let Some(id) = &id {
+            entries.retain(|e| e.component_id == *id);
+        }
+        if entries.len() > 1 {
+            let ids: Vec<_> = entries.iter().map(|e| e.component_id.as_str()).collect();
+            bail!("Multiple instances found for '{}': {}. Use --id to select one.", artifact_path, ids.join(", "));
+        }
+        let entry = entries.first()
+            .context(format!("Component '{}' not found in cluster config", artifact_path))?;
+        let content = build::build_single_artifact(entry, false)
+            .context("Local build failed")?;
+        output::item_ok("Local build complete");
+
+        let local_dir = tempfile::tempdir()?;
+        fs::write(local_dir.path().join("platform.yaml"), &content)?;
+
+        diff_dirs(remote_dir.path(), local_dir.path())
     } else {
         if targets.len() != 2 {
             bail!(

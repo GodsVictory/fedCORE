@@ -6,10 +6,6 @@ helm:
   chart: tetragon
   version: "1.6.0"
 
-  #! Release configuration
-  release:
-    name: tetragon
-    namespace: kube-system
 
   #! Values for helm template
   values:

@@ -1,19 +1,24 @@
 #@ load("@ytt:data", "data")
 #@ load("@ytt:overlay", "overlay")
 #@ load("@ytt:yaml", "yaml")
+
+#@ def component_id(c):
+#@   return c.id if c.id else c.name
+#@ end
+
 #@ for component in data.values.components:
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
 metadata:
-  name: #@ component.name
+  name: #@ component_id(component)
   namespace: #@ data.values.component_sources_namespace
   labels:
     app.kubernetes.io/part-of: fedcore
-    fedcore.io/component: #@ component.name
+    fedcore.io/component: #@ component_id(component)
 spec:
   interval: 5m
-  url: #@ "oci://{}/{}/{}-{}".format(data.values.oci_registry, data.values.oci_repository_base, component.name, data.values.cluster_name)
+  url: #@ "oci://{}/{}/{}-{}".format(data.values.oci_registry, data.values.oci_repository_base, component_id(component), data.values.cluster_name)
   ref:
     #! Use 'tag' for "latest", 'semver' for versioned artifacts
     #@ if component.version == "latest":
@@ -30,34 +35,34 @@ spec:
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: #@ component.name
+  name: #@ component_id(component)
   namespace: #@ data.values.component_sources_namespace
   labels:
     app.kubernetes.io/part-of: fedcore
-    fedcore.io/component: #@ component.name
+    fedcore.io/component: #@ component_id(component)
 spec:
   interval: 10m
   sourceRef:
     kind: OCIRepository
-    name: #@ component.name
+    name: #@ component_id(component)
   path: ./
   prune: true
   wait: true
   commonMetadata:
     labels:
       app.kubernetes.io/part-of: fedcore
-      fedcore.io/component: #@ component.name
+      fedcore.io/component: #@ component_id(component)
   patches:
     #! Patch Deployments to add labels to pod templates
-    - patch: #@ yaml.encode([{"op": "add", "path": "/spec/template/metadata/labels/app.kubernetes.io~1part-of", "value": "fedcore"}, {"op": "add", "path": "/spec/template/metadata/labels/fedcore.io~1component", "value": component.name}])
+    - patch: #@ yaml.encode([{"op": "add", "path": "/spec/template/metadata/labels/app.kubernetes.io~1part-of", "value": "fedcore"}, {"op": "add", "path": "/spec/template/metadata/labels/fedcore.io~1component", "value": component_id(component)}])
       target:
         kind: Deployment
     #! Patch StatefulSets to add labels to pod templates
-    - patch: #@ yaml.encode([{"op": "add", "path": "/spec/template/metadata/labels/app.kubernetes.io~1part-of", "value": "fedcore"}, {"op": "add", "path": "/spec/template/metadata/labels/fedcore.io~1component", "value": component.name}])
+    - patch: #@ yaml.encode([{"op": "add", "path": "/spec/template/metadata/labels/app.kubernetes.io~1part-of", "value": "fedcore"}, {"op": "add", "path": "/spec/template/metadata/labels/fedcore.io~1component", "value": component_id(component)}])
       target:
         kind: StatefulSet
     #! Patch DaemonSets to add labels to pod templates
-    - patch: #@ yaml.encode([{"op": "add", "path": "/spec/template/metadata/labels/app.kubernetes.io~1part-of", "value": "fedcore"}, {"op": "add", "path": "/spec/template/metadata/labels/fedcore.io~1component", "value": component.name}])
+    - patch: #@ yaml.encode([{"op": "add", "path": "/spec/template/metadata/labels/app.kubernetes.io~1part-of", "value": "fedcore"}, {"op": "add", "path": "/spec/template/metadata/labels/fedcore.io~1component", "value": component_id(component)}])
       target:
         kind: DaemonSet
 #@ if hasattr(component, "depends_on") and component.depends_on:

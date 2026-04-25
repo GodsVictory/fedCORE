@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::fs;
 use walkdir::WalkDir;
+use serde::Deserialize;
 use serde_json::Value;
 use crate::paths;
 
@@ -27,10 +28,15 @@ pub fn discover_components() -> Result<Vec<ComponentInfo>> {
             continue;
         }
 
-        let content = fs::read_to_string(&component_file)?;
-        let data: Value = serde_yaml::from_str(&content)?;
+        let name = entry
+            .path()
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
 
-        let name = data["name"].as_str().unwrap_or("").to_string();
+        let content = fs::read_to_string(&component_file)?;
+        let data = parse_ytt_yaml(&content);
+
         let chart = data["helm"]["chart"].as_str().unwrap_or("").to_string();
         let repo = data["helm"]["sourceRepo"].as_str().unwrap_or("").to_string();
         let version = data["helm"]["version"].as_str().unwrap_or("").to_string();
@@ -56,6 +62,17 @@ pub fn discover_components() -> Result<Vec<ComponentInfo>> {
     }
 
     Ok(components)
+}
+
+fn parse_ytt_yaml(content: &str) -> Value {
+    for doc in serde_yaml::Deserializer::from_str(content) {
+        if let Ok(value) = Value::deserialize(doc) {
+            if !value.is_null() {
+                return value;
+            }
+        }
+    }
+    Value::Null
 }
 
 pub fn get_repo_name(name: &str) -> String {

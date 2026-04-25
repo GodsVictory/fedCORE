@@ -150,7 +150,7 @@ fn validate_components_via_build() -> Result<bool> {
 
         pb.set_message(format!("{} @ {}", component_name, artifact.cluster_name));
 
-        match build::validate_build(&artifact.artifact_path, &artifact.cluster) {
+        match build::validate_build(artifact) {
             Ok(true) => {}
             Ok(false) => {
                 failures.lock().unwrap().push(TaskFailure {

@@ -96,8 +96,29 @@ dockerconfigjson: ""
 #! =============================================================================
 #! Components
 #! =============================================================================
-#@schema/type any=True
-components: []
+components:
+- #! Component name (must match a directory under platform/components/ or platform/rgds/)
+  #! Maps to the OCI artifact source. Example: "kong" uses platform/components/kong/
+  name: ""
+
+  #@schema/nullable
+  #! Unique instance identifier for this component deployment
+  #! Used as: Flux resource names (OCIRepository, Kustomization), helm release name, OCI artifact name
+  #! Defaults to the name value when omitted
+  #! Set explicitly when deploying the same component multiple times (e.g., "kong-external", "kong-internal")
+  id: ""
+
+  #@schema/nullable
+  #! Kubernetes namespace for helm template --namespace
+  #! Defaults to the id value when omitted (which itself defaults to name)
+  namespace: ""
+
+  #@schema/nullable
+  #@schema/type any=True
+  #! Override helm flags from component.yaml
+  #! When set, fully replaces the component's default flags (no merging)
+  #! Example: ["--include-crds", "--set", "proxy.type=LoadBalancer"]
+  helm_flags: []
 
 #! =============================================================================
 #! Tenants

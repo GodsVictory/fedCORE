@@ -7,7 +7,12 @@ use crate::output;
 use crate::paths;
 use crate::types::MergedComponent;
 
-pub fn render_helm_chart(temp_dir: &Path) -> Result<()> {
+pub fn render_helm_chart(
+    temp_dir: &Path,
+    release_name: &str,
+    release_namespace: &str,
+    flag_overrides: Option<&[String]>,
+) -> Result<()> {
     let component_file = temp_dir.join("component-merged.yaml");
     let component_data: MergedComponent =
         serde_yaml::from_str(&fs::read_to_string(&component_file)?)?;
@@ -32,14 +37,15 @@ pub fn render_helm_chart(temp_dir: &Path) -> Result<()> {
 
     let mut helm_args = vec![
         "template".to_string(),
-        helm.release.name,
+        release_name.to_string(),
         chart_path,
         "--namespace".to_string(),
-        helm.release.namespace,
+        release_namespace.to_string(),
         "--values".to_string(),
         values_file.to_string_lossy().to_string(),
     ];
-    for flag in &helm.flags {
+    let flags = flag_overrides.unwrap_or(&helm.flags);
+    for flag in flags {
         helm_args.push(flag.clone());
     }
 

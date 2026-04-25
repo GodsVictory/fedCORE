@@ -6,10 +6,6 @@ helm:
   chart: kyverno
   version: "3.7.1"
 
-  #! Release configuration
-  release:
-    name: kyverno
-    namespace: kyverno
 
   #! Values for helm template
   values:

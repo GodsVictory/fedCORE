@@ -34,6 +34,23 @@ impl Default for FluxConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ComponentEntry {
     pub name: String,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub helm_flags: Option<Vec<String>>,
+}
+
+impl ComponentEntry {
+    pub fn id(&self) -> &str {
+        self.id.as_deref().unwrap_or(&self.name)
+    }
+
+    pub fn namespace(&self) -> &str {
+        self.namespace.as_deref().unwrap_or_else(|| self.id())
+    }
+
 }
 
 fn default_true() -> bool {
@@ -57,17 +74,10 @@ pub struct HelmConfig {
     pub source_repo: String,
     #[serde(rename = "resolvedChartRef", default)]
     pub resolved_chart_ref: String,
-    pub release: HelmRelease,
     #[serde(default = "default_empty_object")]
     pub values: serde_json::Value,
     #[serde(default)]
     pub flags: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct HelmRelease {
-    pub name: String,
-    pub namespace: String,
 }
 
 fn default_empty_object() -> serde_json::Value {
@@ -80,7 +90,14 @@ pub struct BuildMatrixEntry {
     pub cluster: String,
     pub cluster_name: String,
     pub target_name: String,
+    #[serde(default)]
+    pub component_id: String,
+    #[serde(default)]
+    pub component_namespace: String,
+    #[serde(default)]
+    pub helm_flags: Option<Vec<String>>,
 }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterMatrixEntry {

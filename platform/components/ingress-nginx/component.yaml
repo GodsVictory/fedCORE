@@ -6,10 +6,6 @@ helm:
   chart: ingress-nginx
   version: "4.14.3"
 
-  #! Release configuration
-  release:
-    name: ingress-nginx
-    namespace: ingress-nginx
 
   #! Values for helm template
   values:

@@ -32,7 +32,10 @@ pub fn discover_matrix() -> Result<BuildMatrix> {
                     artifact_path: path,
                     cluster: normalize_path(&cluster_dir.to_string_lossy()),
                     cluster_name: config.cluster_name.clone(),
-                    target_name: format!("{}-{}", component.name, config.cluster_name),
+                    target_name: format!("{}-{}", component.id(), config.cluster_name),
+                    component_id: component.id().to_string(),
+                    component_namespace: component.namespace().to_string(),
+                    helm_flags: component.helm_flags.clone(),
                 });
             }
         }

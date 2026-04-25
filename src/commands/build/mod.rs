@@ -6,13 +6,12 @@ mod push;
 
 use anyhow::{Result, bail};
 
-pub use utils::*;
 pub(crate) use artifacts::build_single_artifact;
-pub use artifacts::{build_all_artifacts, build_cluster_artifacts};
+pub use artifacts::build_artifacts;
 pub use push::push_artifacts;
 
-pub fn validate_build(artifact_path: &str, cluster_path: &str) -> Result<bool> {
-    match build_single_artifact(artifact_path, cluster_path, false) {
+pub fn validate_build(entry: &crate::types::BuildMatrixEntry) -> Result<bool> {
+    match build_single_artifact(entry, false) {
         Ok(_) => Ok(true),
         Err(_) => Ok(false),
     }
@@ -27,6 +26,10 @@ pub struct BuildArgs {
     /// Cluster directory (e.g., platform/clusters/mycluster)
     #[arg(short, long)]
     pub cluster: Option<String>,
+
+    /// Component instance ID (filters to a specific instance when a component has multiple)
+    #[arg(short, long)]
+    pub id: Option<String>,
 
     /// Build all artifacts for all clusters
     #[arg(long)]
@@ -122,6 +125,7 @@ fn print_dist_manifests(entries: &[crate::types::BuildMatrixEntry]) -> Result<()
 
 pub fn execute(args: BuildArgs) -> Result<()> {
     use crate::output;
+    use crate::commands::matrix;
 
     output::header("Build");
 
@@ -131,47 +135,30 @@ pub fn execute(args: BuildArgs) -> Result<()> {
         None
     };
 
-    let build_all = args.all || (args.artifact.is_none() && args.cluster.is_none());
-
-    if build_all {
-        let matrix = build_all_artifacts()?;
-        if let Some(cfg) = push_cfg {
-            cfg.push(&matrix.build_matrix)?;
-        } else {
-            print_dist_manifests(&matrix.build_matrix)?;
-        }
-    } else if args.artifact.is_none() {
-        let cluster_dir = args.cluster.unwrap();
-        let entries = build_cluster_artifacts(&cluster_dir)?;
-        if let Some(cfg) = push_cfg {
-            cfg.push(&entries)?;
-        } else {
-            print_dist_manifests(&entries)?;
-        }
+    let mut entries = if let Some(cluster_dir) = &args.cluster {
+        matrix::discover_cluster_artifacts(cluster_dir)?
     } else {
-        let artifact_path = args.artifact.unwrap();
-        let cluster_dir = args.cluster
-            .ok_or_else(|| anyhow::anyhow!("--cluster is required when --artifact is provided"))?;
+        matrix::discover_matrix()?.build_matrix
+    };
 
-        let output_content = build_single_artifact(&artifact_path, &cluster_dir, args.push)?;
+    if let Some(artifact_path) = &args.artifact {
+        entries.retain(|e| e.artifact_path == *artifact_path);
+    }
 
-        if let Some(cfg) = push_cfg {
-            let cluster_name = get_cluster_name(&cluster_dir)?;
-            let artifact_name = std::path::Path::new(&artifact_path)
-                .file_name()
-                .unwrap()
-                .to_string_lossy();
-            let target_name = format!("{}-{}", artifact_name, cluster_name);
+    if let Some(id) = &args.id {
+        entries.retain(|e| e.component_id == *id);
+    }
 
-            cfg.push(&[crate::types::BuildMatrixEntry {
-                artifact_path,
-                cluster: cluster_dir,
-                cluster_name,
-                target_name,
-            }])?;
-        } else {
-            println!("{}", output_content);
-        }
+    if entries.is_empty() {
+        bail!("No matching components found");
+    }
+
+    build_artifacts(&entries)?;
+
+    if let Some(cfg) = push_cfg {
+        cfg.push(&entries)?;
+    } else {
+        print_dist_manifests(&entries)?;
     }
 
     Ok(())
