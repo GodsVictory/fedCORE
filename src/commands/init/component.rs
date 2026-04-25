@@ -142,12 +142,6 @@ fn create_helm_component(component_name: &str) -> Result<String> {
         .interact_text()
         .context("Failed to get chart version")?;
 
-    let namespace: String = Input::with_theme(&ColorfulTheme::default())
-        .with_prompt("Kubernetes namespace")
-        .default(component_name.to_string())
-        .interact_text()
-        .context("Failed to get namespace")?;
-
     Ok(format!(r#"#@ load("@ytt:data", "data")
 ---
 #! Helm chart configuration
@@ -155,11 +149,6 @@ helm:
   sourceRepo: {}
   chart: {}
   version: "{}"
-
-  #! Release configuration
-  release:
-    name: {}
-    namespace: {}
 
   #! Values for helm template
   values:
@@ -172,7 +161,7 @@ helm:
       limits:
         cpu: 500m
         memory: 512Mi
-"#, chart_repo, chart_name, chart_version, component_name, namespace))
+"#, chart_repo, chart_name, chart_version))
 }
 
 fn create_manifests_component(component_name: &str) -> Result<String> {

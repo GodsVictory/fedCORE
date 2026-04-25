@@ -5,9 +5,6 @@ helm:
   chart: keda
   version: "2.18.0"
 
-  release:
-    name: keda
-    namespace: keda
 
   flags: ["--include-crds"]
 

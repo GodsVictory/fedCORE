@@ -40,7 +40,7 @@
 
 #@ def ack_eks_controller_enabled():
 #@   for component in data.values.components:
-#@     if component.name == "ack-eks-controller" and component.enabled:
+#@     if component.name == "ack-eks-controller":
 #@       return True
 #@     end
 #@   end

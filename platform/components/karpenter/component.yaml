@@ -5,9 +5,6 @@ helm:
   chart: karpenter
   version: "1.1.1"
 
-  release:
-    name: karpenter
-    namespace: karpenter
 
   flags: ["--include-crds"]
 

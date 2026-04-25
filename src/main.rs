@@ -105,6 +105,10 @@ enum Commands {
         #[arg(short, long, requires = "artifact")]
         cluster: Option<String>,
 
+        /// Component instance ID (required when a component has multiple instances)
+        #[arg(short, long)]
+        id: Option<String>,
+
         /// Kubernetes context (for resolving deployed components)
         #[arg(long)]
         context: Option<String>,
@@ -186,8 +190,8 @@ fn main() -> Result<()> {
         Commands::MirrorFlux { registry } => {
             commands::mirror_flux::execute(registry.as_deref())?;
         }
-        Commands::Compare { targets, artifact, cluster, context, namespace, registry, registry_user, registry_pass } => {
-            commands::compare::execute(targets, artifact, cluster, context, namespace, registry, registry_user, registry_pass)?;
+        Commands::Compare { targets, artifact, cluster, id, context, namespace, registry, registry_user, registry_pass } => {
+            commands::compare::execute(targets, artifact, cluster, id, context, namespace, registry, registry_user, registry_pass)?;
         }
         Commands::Inspect { target, cluster, namespace, registry, registry_user, registry_pass } => {
             commands::inspect::execute(&target, cluster, namespace, registry, registry_user, registry_pass)?;

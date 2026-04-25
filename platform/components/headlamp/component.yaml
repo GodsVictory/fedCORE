@@ -6,10 +6,6 @@ helm:
   chart: headlamp
   version: "0.41.0"
 
-  #! Release configuration
-  release:
-    name: headlamp
-    namespace: headlamp
 
   #! Values for helm template
   values:

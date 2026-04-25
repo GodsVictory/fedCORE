@@ -6,10 +6,6 @@ helm:
   chart: capsule
   version: "0.12.4"
 
-  #! Release configuration
-  release:
-    name: capsule
-    namespace: capsule-system
 
   #! Values for helm template
   values:

@@ -66,7 +66,7 @@ fn resolve_component_namespaces(cluster_dir: &str) -> Vec<String> {
     let mut namespaces = std::collections::BTreeSet::new();
     for entry in &entries {
         output::detail(&format!("building {} to resolve namespaces", entry.target_name));
-        match crate::commands::build::build_single_artifact(&entry.artifact_path, &entry.cluster, false) {
+        match crate::commands::build::build_single_artifact(entry, false) {
             Ok(rendered) => {
                 for doc in rendered.split("\n---") {
                     for line in doc.lines() {
@@ -205,7 +205,7 @@ fn collect_component_overlays(metadata: &ClusterConfig) -> Vec<String> {
         };
         let overlay_path = format!("{}/overlay.yaml", path);
         if Path::new(&overlay_path).exists() {
-            output::detail(&format!("Including overlay from {}", component.name));
+            output::detail(&format!("Including overlay from {}", component.id()));
             overlays.push(overlay_path);
         }
     }

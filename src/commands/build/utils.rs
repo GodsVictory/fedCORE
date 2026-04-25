@@ -1,13 +1,6 @@
 use anyhow::Result;
-use std::path::Path;
-use crate::commands::{read_cluster_metadata, run_cmd, run_cmd_stdin};
+use crate::commands::{run_cmd, run_cmd_stdin};
 use crate::output;
-
-pub fn get_cluster_name(cluster_dir: &str) -> Result<String> {
-    let cluster_file = format!("{}/cluster.yaml", cluster_dir);
-    let metadata = read_cluster_metadata(Path::new(&cluster_file))?;
-    Ok(metadata.cluster_name)
-}
 
 pub fn resolve_image_digests(yaml_content: &str) -> Result<String> {
     let stdout = run_cmd_stdin("kbld", &["-f", "-"], yaml_content.as_bytes())?;

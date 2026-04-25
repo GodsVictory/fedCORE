@@ -6,10 +6,6 @@ helm:
   chart: splunk-otel-collector
   version: "0.147.1"
 
-  #! Release configuration
-  release:
-    name: splunk-otel-collector
-    namespace: splunk-system
 
   #! Values for helm template
   values:
