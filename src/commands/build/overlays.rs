@@ -78,7 +78,11 @@ pub fn apply_prerender_overlays(
     temp_dir: &Path,
     overlays: &[PathBuf],
     platform_overlays: &[PathBuf],
+    component_data_values_yaml: &str,
 ) -> Result<()> {
+    let data_values_file = temp_dir.join("component-values.yaml");
+    fs::write(&data_values_file, component_data_values_yaml)?;
+
     let mut args = vec![
         "-f".to_string(),
         paths::CLUSTER_SCHEMA.to_string(),
@@ -86,6 +90,8 @@ pub fn apply_prerender_overlays(
         cluster_file.to_string(),
         "-f".to_string(),
         component_file.to_string(),
+        "--data-values-file".to_string(),
+        data_values_file.to_string_lossy().to_string(),
     ];
 
     for overlay in platform_overlays {
@@ -114,7 +120,11 @@ pub fn apply_postrender_overlays(
     cluster_dir: &str,
     overlays: &[PathBuf],
     platform_overlays: &[PathBuf],
+    component_data_values_yaml: &str,
 ) -> Result<String> {
+    let data_values_file = manifests_path.with_extension("postrender-component-values.yaml");
+    fs::write(&data_values_file, component_data_values_yaml)?;
+
     let mut args = vec![
         "--ignore-unknown-comments".to_string(),
         "-f".to_string(),
@@ -123,6 +133,8 @@ pub fn apply_postrender_overlays(
         cluster_file.to_string(),
         "-f".to_string(),
         manifests_path.to_string_lossy().to_string(),
+        "--data-values-file".to_string(),
+        data_values_file.to_string_lossy().to_string(),
     ];
 
     for overlay in platform_overlays {

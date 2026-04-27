@@ -10,6 +10,7 @@ use crate::types::MergedComponent;
 pub fn render_helm_chart(
     temp_dir: &Path,
     release_name: &str,
+    namespace: &str,
     flag_overrides: Option<&[String]>,
 ) -> Result<()> {
     let component_file = temp_dir.join("component-merged.yaml");
@@ -38,6 +39,8 @@ pub fn render_helm_chart(
         "template".to_string(),
         release_name.to_string(),
         chart_path,
+        "--namespace".to_string(),
+        namespace.to_string(),
         "--values".to_string(),
         values_file.to_string_lossy().to_string(),
     ];

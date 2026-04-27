@@ -87,6 +87,8 @@ pub struct HelmConfig {
     pub source_repo: String,
     #[serde(rename = "resolvedChartRef", default)]
     pub resolved_chart_ref: String,
+    #[serde(default)]
+    pub namespace: Option<String>,
     #[serde(default = "default_empty_object")]
     pub values: serde_json::Value,
     #[serde(default)]

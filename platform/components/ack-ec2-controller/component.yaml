@@ -2,6 +2,7 @@
 ---
 #! Helm chart configuration
 helm:
+  namespace: ack-system
   sourceRepo: oci://public.ecr.aws/aws-controllers-k8s
   chart: ec2-chart
   version: "1.11.0"
