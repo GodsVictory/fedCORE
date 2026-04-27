@@ -353,12 +353,21 @@ fn generate_infrastructure_from_metadata(
 }
 
 fn push_component_sources(metadata: &ClusterConfig, sources_yaml: &str) -> Result<()> {
+    use crate::commands::run_command_stdout;
+
     let registry = std::env::var("OCI_REGISTRY")
         .context("OCI_REGISTRY required to push component-sources artifact")?;
     let username = std::env::var("OCI_REGISTRY_USER")
         .context("OCI_REGISTRY_USER required to push component-sources artifact")?;
     let password = std::env::var("OCI_REGISTRY_PASS")
         .context("OCI_REGISTRY_PASS required to push component-sources artifact")?;
+
+    let source = run_command_stdout("git", &["config", "--get", "remote.origin.url"])
+        .unwrap_or_else(|| "unknown".to_string());
+    let ref_name = run_command_stdout("git", &["rev-parse", "--abbrev-ref", "HEAD"])
+        .unwrap_or_else(|| "unknown".to_string());
+    let sha = run_command_stdout("git", &["rev-parse", "HEAD"])
+        .unwrap_or_else(|| "unknown".to_string());
 
     let temp_dir = tempfile::tempdir()?;
     let layout_dir = temp_dir.path().join("component-sources");
@@ -371,15 +380,17 @@ fn push_component_sources(metadata: &ClusterConfig, sources_yaml: &str) -> Resul
     );
     let creds = format!("{}:{}", username, password);
     let path_arg = format!("--path={}", layout_dir.display());
+    let source_arg = format!("--source={}", source);
+    let revision_arg = format!("--revision={}@sha1:{}", ref_name, sha);
     let creds_arg = format!("--creds={}", creds);
 
     output::cmd(
         "flux",
-        &["push", "artifact", &oci_ref, &path_arg, "--creds=***"],
+        &["push", "artifact", &oci_ref, &path_arg, &source_arg, &revision_arg, "--creds=***"],
     );
 
     let result = std::process::Command::new("flux")
-        .args(["push", "artifact", &oci_ref, &path_arg, &creds_arg])
+        .args(["push", "artifact", &oci_ref, &path_arg, &source_arg, &revision_arg, &creds_arg])
         .output()
         .context("failed to execute flux push")?;
 
