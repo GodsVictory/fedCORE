@@ -103,9 +103,29 @@ dockerconfigjson: ""
 #! =============================================================================
 #! Components
 #! =============================================================================
-#@schema/type any=True
 components:
 - name: ""
+
+  #@schema/nullable
+  id: ""
+
+  #@schema/nullable
+  namespace: ""
+
+  #@schema/nullable
+  #@schema/type any=True
+  helm_flags: []
+
+  #@schema/nullable
+  version: "latest"
+
+  #@schema/nullable
+  #@schema/type any=True
+  depends_on: []
+
+  #@schema/nullable
+  #@schema/type any=True
+  values: {}
 
 #! =============================================================================
 #! Tenants
