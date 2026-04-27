@@ -6,6 +6,10 @@
 #@   return c.id if c.id else c.name
 #@ end
 
+#@ def component_ns(c):
+#@   return c.namespace if c.namespace else component_id(c)
+#@ end
+
 #@ for component in data.values.components:
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
@@ -48,6 +52,7 @@ spec:
   path: ./
   prune: true
   wait: true
+  targetNamespace: #@ component_ns(component)
   commonMetadata:
     labels:
       app.kubernetes.io/part-of: fedcore

@@ -51,7 +51,7 @@ pub fn build_single_artifact(
 
         if component_data.helm.is_some() {
             output::detail("type: helm chart");
-            render_helm_chart(temp_path, &entry.component_id, &entry.component_namespace, entry.helm_flags.as_deref())?;
+            render_helm_chart(temp_path, &entry.component_id, entry.helm_flags.as_deref())?;
             manifests_path = temp_path.join("helm-rendered.yaml");
         } else {
             output::detail("type: plain manifests");
