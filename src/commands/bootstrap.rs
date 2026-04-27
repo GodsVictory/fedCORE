@@ -66,12 +66,12 @@ pub fn execute(
     output::section("Generating bootstrap configuration");
     let infra_yaml = generate_infrastructure_from_metadata(&metadata, cluster_dir, registry)?;
 
-    println!("{}", infra_yaml);
-
     if deploy {
         output::section("Deploying");
         deploy_infrastructure(&infra_yaml)?;
         output::done("Bootstrap complete");
+    } else {
+        println!("{}", infra_yaml);
     }
 
     Ok(())

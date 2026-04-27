@@ -20,8 +20,8 @@ spec:
   interval: 5m
   url: #@ "oci://{}/{}/{}-{}".format(data.values.oci_registry, data.values.oci_repository_base, component_id(component), data.values.cluster_name)
   ref:
-    #! Use 'tag' for "latest", 'semver' for versioned artifacts
-    #@ if component.version == "latest":
+    #! Use 'tag' for "latest" or unset, 'semver' for pinned versions
+    #@ if not component.version or component.version == "latest":
     tag: latest
     #@ else:
     semver: #@ component.version
