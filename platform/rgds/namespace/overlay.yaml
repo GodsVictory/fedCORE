@@ -2,6 +2,6 @@
 ---
 #@overlay/match missing_ok=True
 components:
-#@overlay/match by=lambda idx,old,new: old["name"] == "namespace"
+#@overlay/match by=lambda idx,old,new: old["name"] == "namespace", expects="1+"
 - depends_on:
   - kro

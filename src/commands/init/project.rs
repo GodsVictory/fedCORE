@@ -207,7 +207,15 @@ fn create_bootstrap_files(project_path: &Path) -> Result<()> {
         .context("Failed to create bootstrap README.md")?;
     fs::write(bootstrap_base.join("component-sources.yaml"), BOOTSTRAP_COMPONENT_SOURCES)
         .context("Failed to create component-sources.yaml")?;
-    fs::write(bootstrap_base.join("flux-ca-certificates.yaml"), BOOTSTRAP_FLUX_CA_CERTS)
+
+    let cluster_base = project_path.join("platform/bootstrap/cluster/base");
+    fs::create_dir_all(&cluster_base)
+        .context("Failed to create bootstrap cluster directory")?;
+    fs::write(cluster_base.join("meta-kustomization.yaml"), BOOTSTRAP_CLUSTER_META_KUSTOMIZATION)
+        .context("Failed to create meta-kustomization.yaml")?;
+    fs::write(cluster_base.join("bootstrap-secrets.yaml"), BOOTSTRAP_CLUSTER_SECRETS)
+        .context("Failed to create bootstrap-secrets.yaml")?;
+    fs::write(cluster_base.join("flux-ca-certificates.yaml"), BOOTSTRAP_CLUSTER_FLUX_CA_CERTS)
         .context("Failed to create flux-ca-certificates.yaml")?;
 
     Ok(())

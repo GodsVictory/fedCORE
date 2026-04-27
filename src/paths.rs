@@ -4,5 +4,6 @@ pub const COMPONENTS_DIR: &str = "platform/components";
 pub const PLATFORM_OVERLAYS: &str = "platform/overlays";
 pub const RGDS_DIR: &str = "platform/rgds";
 pub const BOOTSTRAP_SOURCES_BASE: &str = "platform/bootstrap/component-sources/base";
+pub const BOOTSTRAP_CLUSTER_BASE: &str = "platform/bootstrap/cluster/base";
 pub const HELM_CACHE_DIR: &str = ".cache/helm-charts";
 pub const DIST_DIR: &str = "dist";

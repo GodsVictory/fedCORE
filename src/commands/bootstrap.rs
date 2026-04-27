@@ -16,16 +16,40 @@ pub fn validate_bootstrap(cluster_dir: &str) -> Result<bool> {
 pub fn generate_bootstrap_config(cluster_dir: &str) -> Result<String> {
     validate_inputs(cluster_dir)?;
     let metadata = extract_cluster_metadata(cluster_dir)?;
-    generate_bootstrap(&metadata, cluster_dir, None)
+    let infra = generate_infrastructure_from_metadata(&metadata, cluster_dir, None)?;
+    let sources = generate_component_sources(&metadata, cluster_dir)?;
+    Ok(format!("{}\n---\n{}", infra, sources))
 }
 
-pub fn execute(cluster_dir: &str, deploy: bool, admin_prep: bool, registry: Option<String>) -> Result<()> {
+pub fn execute(
+    cluster_dir: &str,
+    deploy: bool,
+    admin_prep: bool,
+    component_sources: bool,
+    push: bool,
+    registry: Option<String>,
+) -> Result<()> {
     output::header("Bootstrap");
 
     validate_inputs(cluster_dir)?;
     let metadata = extract_cluster_metadata(cluster_dir)?;
 
     output::summary(&metadata.cluster_name);
+
+    if component_sources {
+        output::section("Generating component-sources");
+        let sources_yaml = generate_component_sources(&metadata, cluster_dir)?;
+
+        if push {
+            output::section("Pushing component-sources OCI artifact");
+            push_component_sources(&metadata, &sources_yaml)?;
+            output::done("Component-sources pushed");
+        } else {
+            println!("{}", sources_yaml);
+        }
+        return Ok(());
+    }
+
     output::config(
         "flux",
         &format!("{} (ns: {})", metadata.flux.install, metadata.flux.namespace),
@@ -39,13 +63,14 @@ pub fn execute(cluster_dir: &str, deploy: bool, admin_prep: bool, registry: Opti
         return Ok(());
     }
 
-    output::section("Generating configuration");
-    let bootstrap_yaml = generate_bootstrap(&metadata, cluster_dir, registry)?;
-    println!("{}", bootstrap_yaml);
+    output::section("Generating bootstrap configuration");
+    let infra_yaml = generate_infrastructure_from_metadata(&metadata, cluster_dir, registry)?;
+
+    println!("{}", infra_yaml);
 
     if deploy {
         output::section("Deploying");
-        deploy_bootstrap(&bootstrap_yaml)?;
+        deploy_infrastructure(&infra_yaml)?;
         output::done("Bootstrap complete");
     }
 
@@ -212,7 +237,35 @@ fn collect_component_overlays(metadata: &ClusterConfig) -> Vec<String> {
     overlays
 }
 
-fn generate_bootstrap(
+fn generate_component_sources(
+    metadata: &ClusterConfig,
+    cluster_dir: &str,
+) -> Result<String> {
+    let mut ytt_args = vec![
+        "-f".to_string(),
+        paths::CLUSTER_SCHEMA.to_string(),
+        "-f".to_string(),
+        format!("{}/cluster.yaml", cluster_dir),
+    ];
+
+    for overlay_path in collect_component_overlays(metadata) {
+        ytt_args.push("-f".to_string());
+        ytt_args.push(overlay_path);
+    }
+
+    if Path::new(paths::BOOTSTRAP_SOURCES_BASE).is_dir() {
+        ytt_args.push("-f".to_string());
+        ytt_args.push(paths::BOOTSTRAP_SOURCES_BASE.to_string());
+    }
+
+    let ytt_args_str: Vec<&str> = ytt_args.iter().map(|s| s.as_str()).collect();
+    let stdout = run_cmd("ytt", &ytt_args_str)?;
+    Ok(String::from_utf8_lossy(&stdout).to_string())
+}
+
+/// Render infrastructure: Flux controllers, meta Kustomization, bootstrap secrets, CA certs.
+/// This output is applied directly via kubectl.
+fn generate_infrastructure_from_metadata(
     metadata: &ClusterConfig,
     cluster_dir: &str,
     registry: Option<String>,
@@ -268,20 +321,15 @@ fn generate_bootstrap(
         format!("{}/cluster.yaml", cluster_dir),
     ];
 
-    for overlay_path in collect_component_overlays(metadata) {
-        ytt_args.push("-f".to_string());
-        ytt_args.push(overlay_path);
-    }
-
     let flux_install_path = temp_path.join("flux-install.yaml");
     if metadata.flux.install && flux_install_path.exists() {
         ytt_args.push("-f".to_string());
         ytt_args.push(flux_install_path.to_string_lossy().to_string());
     }
 
-    if Path::new(paths::BOOTSTRAP_SOURCES_BASE).is_dir() {
+    if Path::new(paths::BOOTSTRAP_CLUSTER_BASE).is_dir() {
         ytt_args.push("-f".to_string());
-        ytt_args.push(paths::BOOTSTRAP_SOURCES_BASE.to_string());
+        ytt_args.push(paths::BOOTSTRAP_CLUSTER_BASE.to_string());
     }
 
     let cluster_overlay = format!("{}/overlays", cluster_dir);
@@ -300,8 +348,48 @@ fn generate_bootstrap(
     let ytt_args_str: Vec<&str> = ytt_args.iter().map(|s| s.as_str()).collect();
     let stdout = run_cmd("ytt", &ytt_args_str)?;
 
-    let bootstrap_yaml = String::from_utf8_lossy(&stdout).to_string();
-    Ok(substitute_secrets(&bootstrap_yaml))
+    let infra_yaml = String::from_utf8_lossy(&stdout).to_string();
+    Ok(substitute_secrets(&infra_yaml))
+}
+
+fn push_component_sources(metadata: &ClusterConfig, sources_yaml: &str) -> Result<()> {
+    let registry = std::env::var("OCI_REGISTRY")
+        .context("OCI_REGISTRY required to push component-sources artifact")?;
+    let username = std::env::var("OCI_REGISTRY_USER")
+        .context("OCI_REGISTRY_USER required to push component-sources artifact")?;
+    let password = std::env::var("OCI_REGISTRY_PASS")
+        .context("OCI_REGISTRY_PASS required to push component-sources artifact")?;
+
+    let temp_dir = tempfile::tempdir()?;
+    let layout_dir = temp_dir.path().join("component-sources");
+    fs::create_dir_all(&layout_dir)?;
+    fs::write(layout_dir.join("platform.yaml"), sources_yaml)?;
+
+    let oci_ref = format!(
+        "oci://{}/fedcore/component-sources-{}:latest",
+        registry, metadata.cluster_name
+    );
+    let creds = format!("{}:{}", username, password);
+    let path_arg = format!("--path={}", layout_dir.display());
+    let creds_arg = format!("--creds={}", creds);
+
+    output::cmd(
+        "flux",
+        &["push", "artifact", &oci_ref, &path_arg, "--creds=***"],
+    );
+
+    let result = std::process::Command::new("flux")
+        .args(["push", "artifact", &oci_ref, &path_arg, &creds_arg])
+        .output()
+        .context("failed to execute flux push")?;
+
+    if result.status.success() {
+        output::item_ok("Component-sources artifact pushed");
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        bail!("Failed to push component-sources artifact: {}", stderr.trim());
+    }
 }
 
 fn strip_resource_kinds(yaml: &str, exclude_kinds: &[String]) -> String {
@@ -354,12 +442,12 @@ fn substitute_secrets(yaml: &str) -> String {
     result
 }
 
-fn deploy_bootstrap(yaml: &str) -> Result<()> {
+fn deploy_infrastructure(yaml: &str) -> Result<()> {
     run_cmd("kubectl", &["cluster-info"])?;
     output::item_ok("kubectl configured");
 
     run_cmd_stdin("kubectl", &["apply", "-f", "-"], yaml.as_bytes())?;
 
-    output::item_ok("Configuration applied");
+    output::item_ok("Infrastructure applied");
     Ok(())
 }

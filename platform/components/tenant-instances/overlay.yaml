@@ -2,6 +2,6 @@
 ---
 #@overlay/match missing_ok=True
 components:
-#@overlay/match by=lambda idx,old,new: old["name"] == "tenant-instances"
+#@overlay/match by=lambda idx,old,new: old["name"] == "tenant-instances", expects="1+"
 - depends_on:
   - namespace

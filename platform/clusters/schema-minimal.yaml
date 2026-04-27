@@ -63,6 +63,13 @@ helm_repositories:
 component_sources_namespace: "flux-system"
 
 #! =============================================================================
+#! Bootstrap Secrets and ConfigMaps
+#! =============================================================================
+#! Image pull secret name for private OCI registries
+#! Secret will be created in component_sources_namespace if dockerconfigjson is provided
+image_pull_secret_name: "image-pull-secret"
+
+#! =============================================================================
 #! Cloud-Specific Configuration (Optional)
 #! =============================================================================
 #@schema/nullable
@@ -96,7 +103,6 @@ dockerconfigjson: ""
 #! =============================================================================
 #! Components
 #! =============================================================================
-#@schema/type any=True
 components:
 - #! Component name (must match a directory under platform/components/ or platform/rgds/)
   #! Maps to the OCI artifact source. Example: "kong" uses platform/components/kong/
@@ -120,6 +126,20 @@ components:
   #! When set, fully replaces the component's default flags (no merging)
   #! Example: ["--include-crds", "--set", "proxy.type=LoadBalancer"]
   helm_flags: []
+
+  #@schema/nullable
+  #! OCI artifact version tag to deploy
+  #! Example: "1.0.0" pulls oci://nexus.example.com/helm-charts/kyverno:1.0.0
+  #! Version pinning ensures reproducible deployments
+  #! Leave empty to use "latest" tag (not recommended for prod)
+  version: "latest"
+
+  #@schema/nullable
+  #@schema/type any=True
+  #! Components that must be deployed BEFORE this component
+  #! Resolved automatically from metadata.yaml in each component directory
+  #! Can be overridden here or via pre-render overlay for cluster-specific deps
+  depends_on: []
 
 #! =============================================================================
 #! Tenants

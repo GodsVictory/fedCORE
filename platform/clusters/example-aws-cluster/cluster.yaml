@@ -68,5 +68,9 @@ components:
 - name: kro
 - name: headlamp
 - name: namespace
+  id: test
+- name: namespace
+  id: test2
+  namespace: "asdf"
 - name: tenant-instances
 - name: audit-service-account

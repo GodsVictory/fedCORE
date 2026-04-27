@@ -36,6 +36,14 @@ enum Commands {
         #[arg(long)]
         admin_prep: bool,
 
+        /// Build component-sources OCI artifact (render OCIRepository + Kustomization per component)
+        #[arg(long)]
+        component_sources: bool,
+
+        /// Push artifact to OCI registry (used with --component-sources)
+        #[arg(short, long)]
+        push: bool,
+
         /// OCI registry URL
         #[arg(short, long)]
         registry: Option<String>,
@@ -169,8 +177,8 @@ fn main() -> Result<()> {
     output::set_verbose(cli.verbose);
 
     match cli.command {
-        Commands::Bootstrap { cluster, deploy, admin_prep, registry } => {
-            commands::bootstrap::execute(&cluster, deploy, admin_prep, registry)?;
+        Commands::Bootstrap { cluster, deploy, admin_prep, component_sources, push, registry } => {
+            commands::bootstrap::execute(&cluster, deploy, admin_prep, component_sources, push, registry)?;
         }
         Commands::Build(args) => {
             commands::build::execute(args)?;

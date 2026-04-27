@@ -1,0 +1,43 @@
+#@ load("@ytt:data", "data")
+
+#! Meta Kustomization: Flux manages component-sources as a prunable unit
+#! =====================================================================
+#! This creates an OCIRepository + Kustomization that watches the component-sources
+#! OCI artifact. Because prune: true is set, Flux will automatically delete any
+#! per-component OCIRepository/Kustomization resources that are removed from the
+#! component-sources artifact (i.e., when a component is removed from cluster.yaml).
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: component-sources
+  namespace: #@ data.values.component_sources_namespace
+  labels:
+    app.kubernetes.io/part-of: fedcore
+    fedcore.io/role: component-sources
+spec:
+  interval: 5m
+  url: #@ "oci://{}/{}/component-sources-{}".format(data.values.oci_registry, data.values.oci_repository_base, data.values.cluster_name)
+  ref:
+    tag: latest
+  #@ if hasattr(data.values, 'ca_bundle') and data.values.ca_bundle:
+  certSecretRef:
+    name: #@ data.values.ca_certificates_name
+  #@ end
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: component-sources
+  namespace: #@ data.values.component_sources_namespace
+  labels:
+    app.kubernetes.io/part-of: fedcore
+    fedcore.io/role: component-sources
+spec:
+  interval: 5m
+  sourceRef:
+    kind: OCIRepository
+    name: component-sources
+  path: ./
+  prune: true
+  wait: false

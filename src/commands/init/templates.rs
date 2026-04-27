@@ -4,7 +4,9 @@
 
 pub const BOOTSTRAP_README: &str = include_str!("../../../platform/bootstrap/component-sources/base/README.md");
 pub const BOOTSTRAP_COMPONENT_SOURCES: &str = include_str!("../../../platform/bootstrap/component-sources/base/component-sources.yaml");
-pub const BOOTSTRAP_FLUX_CA_CERTS: &str = include_str!("../../../platform/bootstrap/component-sources/base/flux-ca-certificates.yaml");
+pub const BOOTSTRAP_CLUSTER_META_KUSTOMIZATION: &str = include_str!("../../../platform/bootstrap/cluster/base/meta-kustomization.yaml");
+pub const BOOTSTRAP_CLUSTER_SECRETS: &str = include_str!("../../../platform/bootstrap/cluster/base/bootstrap-secrets.yaml");
+pub const BOOTSTRAP_CLUSTER_FLUX_CA_CERTS: &str = include_str!("../../../platform/bootstrap/cluster/base/flux-ca-certificates.yaml");
 
 // --- Cluster Schema ---
 
