@@ -60,19 +60,20 @@ pub fn render_base_manifests(
     cluster_file: &str,
     base_dir: &str,
     manifests_path: &Path,
+    component_data_values_yaml: &str,
 ) -> Result<()> {
     let manifests_str = manifests_path.to_string_lossy();
+    let data_values_file = manifests_path.with_extension("component-values.yaml");
+    fs::write(&data_values_file, component_data_values_yaml)?;
+    let data_values_str = data_values_file.to_string_lossy();
     let stdout = run_cmd(
         "ytt",
         &[
-            "-f",
-            paths::CLUSTER_SCHEMA,
-            "-f",
-            cluster_file,
-            "-f",
-            &manifests_str,
-            "-f",
-            base_dir,
+            "-f", paths::CLUSTER_SCHEMA,
+            "-f", cluster_file,
+            "-f", &manifests_str,
+            "-f", base_dir,
+            "--data-values-file", &data_values_str,
         ],
     )?;
     fs::write(manifests_path, stdout)?;

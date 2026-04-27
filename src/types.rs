@@ -40,6 +40,8 @@ pub struct ComponentEntry {
     pub namespace: Option<String>,
     #[serde(default)]
     pub helm_flags: Option<Vec<String>>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl ComponentEntry {
@@ -51,6 +53,14 @@ impl ComponentEntry {
         self.namespace.as_deref().unwrap_or_else(|| self.id())
     }
 
+    pub fn to_data_values_yaml(&self) -> String {
+        let mut map = self.extra.clone();
+        map.insert("name".to_string(), serde_json::Value::String(self.name.clone()));
+        map.insert("id".to_string(), serde_json::Value::String(self.id().to_string()));
+        map.insert("namespace".to_string(), serde_json::Value::String(self.namespace().to_string()));
+        let wrapper = serde_json::json!({ "component": map });
+        serde_yaml::to_string(&wrapper).unwrap_or_default()
+    }
 }
 
 fn default_true() -> bool {
@@ -96,6 +106,8 @@ pub struct BuildMatrixEntry {
     pub component_namespace: String,
     #[serde(default)]
     pub helm_flags: Option<Vec<String>>,
+    #[serde(default)]
+    pub component_data_values_yaml: String,
 }
 
 

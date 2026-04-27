@@ -103,46 +103,20 @@ dockerconfigjson: ""
 #! =============================================================================
 #! Components
 #! =============================================================================
+#@schema/type any=True
 components:
-- #! Component name (must match a directory under platform/components/ or platform/rgds/)
-  #! Maps to the OCI artifact source. Example: "kong" uses platform/components/kong/
-  name: ""
-
-  #@schema/nullable
-  #! Unique instance identifier for this component deployment
-  #! Used as: Flux resource names (OCIRepository, Kustomization), helm release name, OCI artifact name
-  #! Defaults to the name value when omitted
-  #! Set explicitly when deploying the same component multiple times (e.g., "kong-external", "kong-internal")
-  id: ""
-
-  #@schema/nullable
-  #! Kubernetes namespace for helm template --namespace
-  #! Defaults to the id value when omitted (which itself defaults to name)
-  namespace: ""
-
-  #@schema/nullable
-  #@schema/type any=True
-  #! Override helm flags from component.yaml
-  #! When set, fully replaces the component's default flags (no merging)
-  #! Example: ["--include-crds", "--set", "proxy.type=LoadBalancer"]
-  helm_flags: []
-
-  #@schema/nullable
-  #! OCI artifact version tag to deploy
-  #! Example: "1.0.0" pulls oci://nexus.example.com/helm-charts/kyverno:1.0.0
-  #! Version pinning ensures reproducible deployments
-  #! Leave empty to use "latest" tag (not recommended for prod)
-  version: "latest"
-
-  #@schema/nullable
-  #@schema/type any=True
-  #! Components that must be deployed BEFORE this component
-  #! Resolved automatically from metadata.yaml in each component directory
-  #! Can be overridden here or via pre-render overlay for cluster-specific deps
-  depends_on: []
+- name: ""
 
 #! =============================================================================
 #! Tenants
 #! =============================================================================
 #@schema/type any=True
 tenants: []
+
+#! =============================================================================
+#! Build-time values (injected by fedcore build, not set in cluster.yaml)
+#! =============================================================================
+#! Per-component instance values passed as --data-value during base manifest rendering.
+#! All fields from the components array entry are available under this key.
+#@schema/type any=True
+component: {}

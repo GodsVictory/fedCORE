@@ -65,7 +65,7 @@ pub fn build_single_artifact(
 
     let base_dir = format!("{}/base", entry.artifact_path);
     if Path::new(&base_dir).is_dir() {
-        render_base_manifests(&cluster_file, &base_dir, &manifests_path)?;
+        render_base_manifests(&cluster_file, &base_dir, &manifests_path, &entry.component_data_values_yaml)?;
         output::detail("base manifests rendered");
     }
 
