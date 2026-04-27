@@ -33,10 +33,10 @@ flowchart TB
 
             subgraph render["🎨 RENDER Phase"]
                 J1["Extract helm configuration:<br/>chart, version, repo, values"]
-                J2["helm template {release_name} {chart_url}<br/>--version {version}<br/>--namespace {namespace}<br/>--values values.yaml<br/>--include-crds"]
+                J2["helm template {release_name} {chart_url}<br/>--version {version}<br/>--values values.yaml<br/>--include-crds"]
                 J3["Save rendered output to temp file"]
                 J4["Scan base/ directory<br/>Find additional manifests<br/>e.g., namespace.yaml"]
-                J5["Combine rendered chart + base manifests"]
+                J5["Combine rendered chart + base manifests<br/>with --data-values-file component-values.yaml"]
             end
         end
 
@@ -198,29 +198,40 @@ helm pull $CHART_REF/$CHART --version $VERSION --destination .cache/helm-charts
 # (in practice the CLI does this with serde, but you can use yq)
 yq '.helm.values' $TMPDIR/component-merged.yaml > $TMPDIR/values.yaml
 
-# Render the chart
+# Render the chart (namespace is set by Flux targetNamespace, not helm template)
 helm template capsule .cache/helm-charts/capsule-0.12.4.tgz \
-  --namespace capsule-system \
   --values $TMPDIR/values.yaml \
   > $TMPDIR/helm-rendered.yaml
 ```
 
 **Output** (`helm-rendered.yaml`) — standard Kubernetes manifests (ServiceAccount, Deployment, Webhooks, CRDs, etc.)
 
+> **Note:** `--namespace` is no longer passed to `helm template`. Namespace assignment is handled by Flux via `targetNamespace` on the component's Kustomization resource in the bootstrap component-sources manifest.
+
 ### Step 3: Merge base manifests
 
-If the component has a `base/` directory (capsule has `base/namespace.yaml`), ytt merges them with the helm output:
+If the component has a `base/` directory (capsule has `base/namespace.yaml`), ytt merges them with the helm output. Component entry fields from cluster.yaml are passed as data values so base templates can reference them (e.g., `data.values.component.namespace`):
 
 ```bash
+# Generate component data values file from the cluster.yaml component entry
+cat > $TMPDIR/component-values.yaml <<EOF
+component:
+  name: capsule
+  id: capsule
+  namespace: capsule-system
+  values: {}
+EOF
+
 ytt \
   -f platform/clusters/schema.yaml \
   -f $CLUSTER/cluster.yaml \
   -f $TMPDIR/helm-rendered.yaml \
   -f $ARTIFACT/base/ \
+  --data-values-file $TMPDIR/component-values.yaml \
   > $TMPDIR/manifests.yaml
 ```
 
-This combines the helm-rendered resources with the base `Namespace` manifest into a single stream.
+This combines the helm-rendered resources with the base templates into a single stream. Base manifests can use `data.values.component.*` to access component-specific fields — for example, `data.values.component.namespace` for dynamic namespace names, or `data.values.component.values` for custom per-instance values defined in cluster.yaml.
 
 > **Note:** Steps 3 and 4 are separate ytt invocations in the CLI, but could be combined into a single call by passing both `base/` and the cluster overlays together. They're shown separately here to match the current implementation.
 
@@ -256,10 +267,17 @@ CHART=$(yq '.helm.chart' $T/component-merged.yaml)
 VERSION=$(yq '.helm.version' $T/component-merged.yaml)
 yq '.helm.values' $T/component-merged.yaml > $T/values.yaml
 helm pull $CHART_REF/$CHART --version $VERSION --destination $T
-helm template capsule $T/capsule-0.12.4.tgz --namespace capsule-system --values $T/values.yaml > $T/helm-rendered.yaml
+helm template capsule $T/capsule-0.12.4.tgz --values $T/values.yaml > $T/helm-rendered.yaml
 
-# 3. Merge base manifests
-ytt -f platform/clusters/schema.yaml -f $CLUSTER/cluster.yaml -f $T/helm-rendered.yaml -f $ARTIFACT/base/ > $T/manifests.yaml
+# 3. Merge base manifests (with component data values for dynamic namespace etc.)
+cat > $T/component-values.yaml <<EOF
+component:
+  name: capsule
+  id: capsule
+  namespace: capsule-system
+  values: {}
+EOF
+ytt -f platform/clusters/schema.yaml -f $CLUSTER/cluster.yaml -f $T/helm-rendered.yaml -f $ARTIFACT/base/ --data-values-file $T/component-values.yaml > $T/manifests.yaml
 
 # 4. Post-render: apply cluster overlays
 ytt --ignore-unknown-comments -f platform/clusters/schema.yaml -f $CLUSTER/cluster.yaml -f $T/manifests.yaml -f $CLUSTER/overlays/ > dist/capsule-aws-example-usgw1-dev-app.yaml
@@ -308,9 +326,10 @@ fedcore build --artifact platform/components/capsule --cluster platform/clusters
 - **Inputs**:
   - Chart from OCI registry or HTTP repo
   - Merged values from component.yaml
-  - Release name and namespace from component.yaml
+  - Release name from component.yaml
 - **Output**: Rendered Kubernetes manifests
-- **Additional**: Combines with `base/*.yaml` files (e.g., namespace.yaml)
+- **Namespace**: Not set during helm template; handled by Flux `targetNamespace` at deploy time
+- **Base manifests**: Combined with `base/*.yaml` files via ytt, with component entry fields available as `data.values.component.*` (name, id, namespace, values)
 
 #### POST-RENDER Phase (All components)
 - **When**: After Helm rendering (or directly for plain components)

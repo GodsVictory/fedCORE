@@ -3,7 +3,7 @@
 ```mermaid
 flowchart TB
     subgraph entry["Script Entry"]
-        A["fedcore bootstrap [options]<br/>--cluster, --deploy, --admin-prep, --registry"]
+        A["fedcore bootstrap [options]<br/>--cluster, --deploy, --admin-prep,<br/>--component-sources, --push, --registry"]
     end
 
     subgraph validation["1. Validation Phase"]
@@ -20,7 +20,7 @@ flowchart TB
     end
 
     subgraph mode_decision["3. Mode Decision"]
-        L{"--admin-prep?"}
+        L{"Mode?"}
     end
 
     subgraph admin_prep["Admin-Prep Mode"]
@@ -30,7 +30,28 @@ flowchart TB
         AP4["Output manifest to stdout"]
     end
 
-    subgraph generation["4. Bootstrap Configuration Generation"]
+    subgraph cs_generation["Component-Sources Generation"]
+        direction TB
+
+        subgraph cs_overlays["Component Overlay Detection"]
+            CS_CO1["For each enabled component:<br/>check for overlay.yaml in component root"]
+            CS_CO2["Collect overlay.yaml paths<br/>(e.g., depends_on declarations)"]
+        end
+
+        subgraph cs_render["Component-Sources Rendering"]
+            CS1["Build ytt arguments:<br/>-f schema.yaml<br/>-f cluster.yaml<br/>-f overlay.yaml (per component)"]
+            CS2["Add component-sources template:<br/>platform/bootstrap/component-sources/base/"]
+            CS3["ytt processing:<br/>Render per-component OCIRepository +<br/>Kustomization with targetNamespace"]
+        end
+
+        subgraph cs_output["Component-Sources Output"]
+            CS_P{"--push?"}
+            CS_PRINT["Output to stdout"]
+            CS_PUSH["flux push artifact<br/>oci://{registry}/fedcore/component-sources-{cluster}:latest"]
+        end
+    end
+
+    subgraph infra_generation["Infrastructure Generation"]
         direction TB
 
         subgraph flux_install["Flux Installation Manifest"]
@@ -41,16 +62,13 @@ flowchart TB
             I5["Save to temp/flux-install.yaml"]
         end
 
-        subgraph component_overlays["Component Overlay Detection"]
-            CO1["For each enabled component:<br/>check for overlay.yaml in component root"]
-            CO2["Collect overlay.yaml paths<br/>(e.g., depends_on declarations)"]
+        subgraph cluster_base["Cluster Base Resources"]
+            CB1["Add cluster base templates:<br/>platform/bootstrap/cluster/base/<br/>(meta-kustomization, bootstrap-secrets,<br/>flux-ca-certificates)"]
         end
 
-        subgraph component_sources["Component OCIRepository Wiring"]
-            J1["Build ytt arguments:<br/>-f schema.yaml<br/>-f cluster.yaml<br/>-f overlay.yaml (per component)<br/>-f temp/flux-install.yaml"]
-            J2["Add component-sources template:<br/>platform/bootstrap/component-sources/base/"]
-            J3["Add cluster overlays (if exist):<br/>platform/clusters/{cluster}/overlays/"]
-            J4["ytt processing:<br/>Merge all inputs"]
+        subgraph cluster_overlays["Cluster Overlays"]
+            CL1["Add cluster overlays (if exist):<br/>platform/clusters/{cluster}/overlays/"]
+            CL2["ytt processing:<br/>Merge all inputs"]
         end
 
         subgraph secrets["Secret Substitution"]
@@ -58,7 +76,7 @@ flowchart TB
         end
     end
 
-    subgraph output_mode["5. Output Mode Decision"]
+    subgraph output_mode["5. Infrastructure Output"]
         L2{"--deploy?"}
     end
 
@@ -77,16 +95,23 @@ flowchart TB
     H --> L
 
     %% Admin-prep branch
-    L -->|"Yes"| AP1 --> AP2 --> AP3 --> AP4
+    L -->|"--admin-prep"| AP1 --> AP2 --> AP3 --> AP4
 
-    %% Normal bootstrap branch
-    L -->|"No"| I1
+    %% Component-sources branch
+    L -->|"--component-sources"| CS_CO1 --> CS_CO2
+    CS_CO2 --> CS1 --> CS2 --> CS3
+    CS3 --> CS_P
+    CS_P -->|"No"| CS_PRINT
+    CS_P -->|"Yes"| CS_PUSH
+
+    %% Infrastructure branch (default)
+    L -->|"Default"| I1
     I1 --> I2 --> I3
     I3 -->|"Yes"| I4 --> I5
     I3 -->|"No"| I5
-    I5 --> CO1 --> CO2
-    CO2 --> J1 --> J2 --> J3 --> J4
-    J4 --> K1 --> L2
+    I5 --> CB1
+    CB1 --> CL1 --> CL2
+    CL2 --> K1 --> L2
 
     %% Output mode branching
     L2 -->|"No"| M1
@@ -101,33 +126,41 @@ flowchart TB
     classDef pipedStyle fill:#005050,stroke:#66cccc,stroke-width:2px,color:#fff
     classDef deployStyle fill:#660033,stroke:#ff66b3,stroke-width:2px,color:#fff
     classDef adminStyle fill:#004d4d,stroke:#66ffcc,stroke-width:2px,color:#fff
+    classDef csStyle fill:#005030,stroke:#66cc99,stroke-width:2px,color:#fff
 
     class A entryStyle
     class B,C,D,E validationStyle
     class F,G,H metadataStyle
-    class I1,I2,I3,I4,I5,CO1,CO2,J1,J2,J3,J4,K1 generationStyle
-    class L,L2 decisionStyle
+    class I1,I2,I3,I4,I5,CB1,CL1,CL2,K1 generationStyle
+    class L,L2,CS_P decisionStyle
     class M1 pipedStyle
     class N1,O1 deployStyle
     class AP1,AP2,AP3,AP4 adminStyle
+    class CS_CO1,CS_CO2,CS1,CS2,CS3,CS_PRINT,CS_PUSH csStyle
 ```
 
 ## Key Concepts
 
 ### Script Modes
 
-**fedcore bootstrap** supports three modes:
+**fedcore bootstrap** supports four modes:
 
 1. **Piped Mode** (default)
-   - Generates bootstrap configuration to stdout
+   - Generates full bootstrap configuration (infrastructure + component-sources) to stdout
    - User can redirect to file: `fedcore bootstrap -c <cluster> > bootstrap.yaml`
    - User can pipe to kubectl: `fedcore bootstrap -c <cluster> | kubectl apply -f -`
 
 2. **Deploy Mode** (`--deploy` flag)
-   - Generates and immediately applies bootstrap configuration
+   - Generates and immediately applies **infrastructure** configuration via kubectl
+   - Does not include component-sources (use `--component-sources --push` separately)
    - Requires kubectl to be configured for target cluster
 
-3. **Admin-Prep Mode** (`--admin-prep` flag)
+3. **Component-Sources Mode** (`--component-sources` flag)
+   - Generates only the component-sources manifest (per-component OCIRepository + Kustomization)
+   - Output to stdout by default, or push as OCI artifact with `--push`
+   - The pushed artifact is watched by the meta-kustomization in the cluster, enabling Flux to prune removed components automatically
+
+4. **Admin-Prep Mode** (`--admin-prep` flag)
    - Generates a minimal manifest for cluster administrators
    - For namespace-scoped Flux on clusters without cluster-admin access
    - Includes only CRDs, namespace, service accounts, and RBAC
@@ -156,10 +189,24 @@ flowchart TB
 - **Format**: Flux OCIRepository + Kustomization pointing to:
   - `oci://{registry}/fedcore/{component}-{cluster}:{version}`
 - **Template**: `platform/bootstrap/component-sources/base/`
+- **Namespace**: Each Kustomization sets `targetNamespace` from the component's namespace (defaults to component id)
+- **Versioning**: Uses `tag: latest` when version is unset or "latest", `semver` for pinned versions
+
+#### Meta-Kustomization
+- **Purpose**: Flux watches a single component-sources OCI artifact and applies all per-component resources
+- **Location**: `platform/bootstrap/cluster/base/meta-kustomization.yaml`
+- **Pruning**: Because `prune: true` is set, removing a component from cluster.yaml and re-pushing the component-sources artifact causes Flux to automatically delete the corresponding OCIRepository + Kustomization
+- **Artifact**: `oci://{registry}/fedcore/component-sources-{cluster}:latest`
+
+#### Bootstrap Secrets
+- **Purpose**: Secrets and ConfigMaps that must exist before Flux can pull OCI artifacts
+- **Location**: `platform/bootstrap/cluster/base/bootstrap-secrets.yaml`
+- **Includes**: Image pull secret (from `dockerconfigjson`), CA certificates secret and ConfigMap (from `ca_bundle`)
+- **Conditional**: Only rendered when the corresponding cluster.yaml values are set
 
 #### Cluster Overlays
 - **Purpose**: Cluster-specific customizations
-- **Applied To**: Flux controllers and component sources
+- **Applied To**: Flux controllers and infrastructure resources
 - **Common Uses**: Node selectors, tolerations, resource limits, additional labels
 - **Location**: `platform/clusters/{cluster}/overlays/`
 
@@ -173,6 +220,14 @@ Bootstrap requires several secrets from environment variables:
 | SPLUNK_HEC_HOST | No | Splunk HTTP Event Collector endpoint |
 | SPLUNK_HEC_TOKEN | No | Splunk HEC authentication token |
 
+**For `--component-sources --push`:**
+
+| Variable | Required | Purpose |
+|---|---|---|
+| OCI_REGISTRY | Yes | OCI registry URL for pushing component-sources artifact |
+| OCI_REGISTRY_USER | Yes | Registry username |
+| OCI_REGISTRY_PASS | Yes | Registry password |
+
 ### Component Dependencies
 
 Dependencies are declared in a component's `overlay.yaml` as a ytt data values
@@ -184,7 +239,7 @@ Example (`platform/rgds/namespace/overlay.yaml`):
 ---
 #@overlay/match missing_ok=True
 components:
-#@overlay/match by=lambda idx,old,new: old["name"] == "namespace"
+#@overlay/match by=lambda idx,old,new: old["name"] == "namespace", expects="1+"
 - depends_on:
   - kro
 ```
@@ -230,9 +285,14 @@ each enabled component and extracting namespace fields from the rendered output.
 ```
 platform/
 ├── bootstrap/
-│   └── component-sources/
+│   ├── component-sources/
+│   │   └── base/
+│   │       └── component-sources.yaml  # Per-component OCIRepository + Kustomization templates
+│   └── cluster/
 │       └── base/
-│           └── *.yaml              # OCIRepository/Kustomization templates
+│           ├── meta-kustomization.yaml # Watches component-sources OCI artifact (prune: true)
+│           ├── bootstrap-secrets.yaml  # Image pull secret + CA certificates
+│           └── flux-ca-certificates.yaml # Flux controller CA cert overlay
 ├── components/{component}/
 │   ├── component.yaml              # Helm chart config (if Helm)
 │   ├── overlay.yaml                # Bootstrap data values overlay (optional)
@@ -251,14 +311,17 @@ platform/
 ### Example Usage
 
 ```bash
-# Generate bootstrap config to stdout (review before applying)
+# Generate full bootstrap config to stdout (infrastructure + component-sources)
 fedcore bootstrap -c platform/clusters/aws-example-usgw1-dev-app
 
-# Generate and save to file
-fedcore bootstrap -c platform/clusters/aws-example-usgw1-dev-app > bootstrap.yaml
-
-# Generate and deploy in one step
+# Generate and deploy infrastructure directly
 fedcore bootstrap -c platform/clusters/aws-example-usgw1-dev-app --deploy
+
+# Generate component-sources manifest only (review before pushing)
+fedcore bootstrap -c platform/clusters/aws-example-usgw1-dev-app --component-sources
+
+# Build and push component-sources as OCI artifact
+fedcore bootstrap -c platform/clusters/aws-example-usgw1-dev-app --component-sources --push
 
 # Generate admin-prep manifest for namespace-scoped clusters
 fedcore bootstrap -c platform/clusters/onprem-dc1-dev-app --admin-prep -r nexus.example.com/fedcore
@@ -283,7 +346,12 @@ Before running bootstrap:
    - `SPLUNK_HEC_HOST`: Optional
    - `SPLUNK_HEC_TOKEN`: Optional
 
-4. **Required tools**:
+4. **Environment variables** (for --component-sources --push):
+   - `OCI_REGISTRY`: Required
+   - `OCI_REGISTRY_USER`: Required
+   - `OCI_REGISTRY_PASS`: Required
+
+5. **Required tools**:
    - `flux` CLI
    - `ytt` templating tool
    - `kubectl`

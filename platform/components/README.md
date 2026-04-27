@@ -504,16 +504,24 @@ helm:
 
 ### 3. base/namespace.yaml
 
+Base manifests receive the component's cluster.yaml entry fields as `data.values.component.*` during the build. Use `data.values.component.namespace` for dynamic namespace names:
+
 ```yaml
 #@ load("@ytt:data", "data")
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {namespace}
+  name: #@ data.values.component.namespace
   labels:
-    name: {namespace}
+    name: #@ data.values.component.namespace
 ```
+
+Available fields under `data.values.component`:
+- `name` — component name (matches directory name)
+- `id` — instance identifier (defaults to name)
+- `namespace` — target namespace (defaults to id)
+- `values` — custom per-instance values from cluster.yaml
 
 ### 4. Pod Placement (Platform Components)
 
@@ -632,6 +640,14 @@ Add to `platform/clusters/{cluster}/cluster.yaml` under `components:`:
 - name: {component-name}
 ```
 
+Optional fields on the component entry:
+- `id` — unique instance identifier (defaults to name; set when deploying same component multiple times)
+- `namespace` — target Kubernetes namespace (defaults to id)
+- `version` — OCI artifact version tag (defaults to "latest")
+- `helm_flags` — override helm flags from component.yaml
+- `depends_on` — components that must deploy first
+- `values` — custom per-instance values accessible in base templates as `data.values.component.values`
+
 Components are enabled by being listed — there is no `enabled` flag. `depends_on` is resolved automatically from the component's `overlay.yaml` (if present), or can be overridden in cluster.yaml.
 
 ### 8. Component Overlay (Optional)
@@ -643,7 +659,7 @@ If a component needs to inject data into the bootstrap process (e.g., setting `d
 ---
 #@overlay/match missing_ok=True
 components:
-#@overlay/match by=lambda idx,old,new: old["name"] == "{component-name}"
+#@overlay/match by=lambda idx,old,new: old["name"] == "{component-name}", expects="1+"
 - depends_on:
   - {dependency}
 ```
