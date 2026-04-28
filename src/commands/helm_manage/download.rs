@@ -3,7 +3,10 @@ use rayon::prelude::*;
 use std::process::Command;
 use std::sync::{Mutex, Once};
 use std::path::Path;
+use std::io::Read;
 use std::fs;
+use flate2::read::GzDecoder;
+use tar::Archive;
 use super::discovery::*;
 use crate::helm;
 use crate::output;
@@ -45,7 +48,7 @@ fn ensure_chart(
     Ok(())
 }
 
-pub fn download_current_versions(components: &[&ComponentInfo], dir: &str) -> Result<()> {
+pub fn download_current_versions(components: &[&ComponentInfo], dir: &str, update: bool) -> Result<()> {
     output::section("Downloading charts");
 
     let repos_init = Once::new();
@@ -60,6 +63,15 @@ pub fn download_current_versions(components: &[&ComponentInfo], dir: &str) -> Re
                 format!("{}:{}", component.chart, component.version),
                 format!("{}", e),
             ));
+        }
+
+        if update {
+            if let Err(e) = copy_default_values(component) {
+                failures.lock().unwrap().push(TaskFailure::new(
+                    &component.name,
+                    format!("copy default values failed: {}", e),
+                ));
+            }
         }
 
         pb.inc(1);
@@ -130,6 +142,12 @@ pub fn discover_latest_versions(
                     failures.lock().unwrap().push(TaskFailure::new(
                         &component.name,
                         format!("update failed: {}", e),
+                    ));
+                }
+                if let Err(e) = copy_default_values(&latest_component) {
+                    failures.lock().unwrap().push(TaskFailure::new(
+                        &component.name,
+                        format!("copy default values failed: {}", e),
                     ));
                 }
             }
@@ -222,6 +240,29 @@ fn update_component_version(component_path: &str, new_version: &str) -> Result<(
 
     std::fs::write(&file_path, updated)?;
     Ok(())
+}
+
+fn copy_default_values(component: &ComponentInfo) -> Result<()> {
+    let cache_path = helm::cached_path(&component.chart, &component.version);
+    let tgz = fs::File::open(&cache_path)
+        .context(format!("Could not open cached chart {}", cache_path))?;
+    let decoder = GzDecoder::new(tgz);
+    let mut archive = Archive::new(decoder);
+
+    let values_suffix = "/values.yaml";
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_string_lossy().to_string();
+        if path.ends_with(values_suffix) && path.matches('/').count() == 1 {
+            let mut contents = String::new();
+            entry.read_to_string(&mut contents)?;
+            let dest = format!("platform/{}/default-values.yaml", component.component_path);
+            fs::write(&dest, contents)?;
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("values.yaml not found in chart archive")
 }
 
 use anyhow::Context;

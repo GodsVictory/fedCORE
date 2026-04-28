@@ -7,7 +7,7 @@
 
 #! overlay-phase: pre-render
 ---
-#@overlay/match by=overlay.subset({"name": "headlamp"})
+#@overlay/match by=overlay.subset({"helm": {}})
 ---
 helm:
   values:

@@ -6,7 +6,7 @@
 
 #! overlay-phase: pre-render
 ---
-#@overlay/match by=overlay.subset({"name": "ingress-nginx"})
+#@overlay/match by=overlay.subset({"helm": {}})
 ---
 helm:
   values:

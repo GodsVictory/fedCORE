@@ -8,7 +8,7 @@
 #! overlay-phase: pre-render
 #! Overlay to add AWS environment variables to Tetragon via Helm values
 ---
-#@overlay/match by=overlay.subset({"name": "tetragon"})
+#@overlay/match by=overlay.subset({"helm": {}})
 ---
 helm:
   values:

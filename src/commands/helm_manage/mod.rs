@@ -25,7 +25,7 @@ pub struct HelmManageArgs {
     #[arg(short, long)]
     pub latest: bool,
 
-    /// Update component YAML files (requires --latest)
+    /// Update component YAML files with discovered versions and default values
     #[arg(short, long)]
     pub update: bool,
 
@@ -98,7 +98,7 @@ pub fn execute(args: HelmManageArgs) -> Result<()> {
     if args.latest {
         discover_latest_versions(&filtered_components, &args.dir, args.update)?;
     } else {
-        download_current_versions(&filtered_components, &args.dir)?;
+        download_current_versions(&filtered_components, &args.dir, args.update)?;
     }
 
     if args.push {
