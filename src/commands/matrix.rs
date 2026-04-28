@@ -35,7 +35,6 @@ pub fn discover_matrix() -> Result<BuildMatrix> {
                     target_name: format!("{}-{}", component.id(), config.cluster_name),
                     component_id: component.id().to_string(),
                     component_namespace: component.namespace().to_string(),
-                    helm_flags: component.helm_flags.clone(),
                     component_data_values_yaml: component.to_data_values_yaml(),
                 });
             }

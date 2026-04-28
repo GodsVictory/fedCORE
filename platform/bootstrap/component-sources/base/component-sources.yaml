@@ -3,7 +3,7 @@
 #@ load("@ytt:yaml", "yaml")
 
 #@ def component_id(c):
-#@   return c.id if c.id else c.name
+#@   return c.id if hasattr(c, "id") and c.id else c.name
 #@ end
 
 #@ for component in data.values.components:
@@ -21,7 +21,7 @@ spec:
   url: #@ "oci://{}/{}/{}-{}".format(data.values.oci_registry, data.values.oci_repository_base, component_id(component), data.values.cluster_name)
   ref:
     #! Use 'tag' for "latest" or unset, 'semver' for pinned versions
-    #@ if not component.version or component.version == "latest":
+    #@ if not hasattr(component, "version") or not component.version or component.version == "latest":
     tag: latest
     #@ else:
     semver: #@ component.version

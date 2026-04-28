@@ -127,7 +127,34 @@ rgds:
 - `cluster_name`: Must match the directory name
 - `cloud`: Cloud provider (`aws`, `azure`, `onprem`)
 - `region`: Cloud region or datacenter identifier
+- `components`: List of platform components with optional per-instance overrides
 - All other cluster-level configuration
+
+### Per-Component Helm Overrides
+
+Components in the `components:` array can include a `helm:` key to override any helm values from the component's defaults. The build pipeline deep-merges these overrides on top of the component's `component.yaml` — only the keys you specify are changed.
+
+```yaml
+components:
+  - name: kong-ingress
+    id: kong-dev
+    helm:
+      values:
+        gateway:
+          replicaCount: 1
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+  - name: kong-ingress
+    id: kong-prod
+    helm:
+      values:
+        gateway:
+          replicaCount: 3
+```
+
+This supports multiple instances of the same component with different configurations. Each instance gets its own `id`, `namespace`, and `helm:` overrides.
 
 ### Tenant Files
 

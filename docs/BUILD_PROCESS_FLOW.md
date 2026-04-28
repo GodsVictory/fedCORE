@@ -29,6 +29,7 @@ flowchart TB
                 I2["Scan overlays/{env}/<br/>Filter files with:<br/>#! overlay-phase: pre-render"]
                 I3["Apply overlays to component.yaml<br/>using ytt"]
                 I4["Modify helm.values section<br/>in component metadata"]
+                I5["Deep merge cluster component<br/>helm overrides into<br/>component-merged.yaml"]
             end
 
             subgraph render["🎨 RENDER Phase"]
@@ -89,8 +90,8 @@ flowchart TB
     H -->|"type: plain<br/>or no component.yaml"| K1
 
     %% Helm flow
-    I1 --> I2 --> I3 --> I4
-    I4 --> J1 --> J2 --> J3 --> J4 --> J5
+    I1 --> I2 --> I3 --> I4 --> I5
+    I5 --> J1 --> J2 --> J3 --> J4 --> J5
 
     %% Flows converge at post-render
     J5 --> L1
@@ -157,6 +158,24 @@ ytt \
 
 This resolves all `data.values.*` references in `component.yaml`. For example, `data.values.monitoring.enabled` is evaluated against the cluster's actual configuration. Platform overlays (from `platform/overlays/`) are applied during this step — for example, the chart-repo overlay injects `resolvedChartRef` based on the cluster's `helm_repositories` config.
 
+After ytt resolves the template, the CLI deep-merges any per-instance overrides from the component's `helm:` key in `cluster.yaml` into `component-merged.yaml`. This allows cluster configs to override any helm value without modifying the component template:
+
+```yaml
+# In cluster.yaml
+components:
+  - name: kong-ingress
+    id: kong-dev
+    helm:
+      values:
+        gateway:
+          replicaCount: 1
+          resources:
+            requests:
+              cpu: "500m"
+```
+
+The merge is recursive — only the keys you specify are overridden, everything else keeps the component.yaml defaults.
+
 **Output** (`component-merged.yaml`) — a plain YAML with all ytt expressions resolved:
 ```yaml
 helm:
@@ -219,7 +238,7 @@ component:
   name: capsule
   id: capsule
   namespace: capsule-system
-  values: {}
+  helm: {}
 EOF
 
 ytt \
@@ -275,7 +294,7 @@ component:
   name: capsule
   id: capsule
   namespace: capsule-system
-  values: {}
+  helm: {}
 EOF
 ytt -f platform/clusters/schema.yaml -f $CLUSTER/cluster.yaml -f $T/helm-rendered.yaml -f $ARTIFACT/base/ --data-values-file $T/component-values.yaml > $T/manifests.yaml
 
@@ -329,7 +348,8 @@ fedcore build --artifact platform/components/capsule --cluster platform/clusters
   - Release name from component.yaml
 - **Output**: Rendered Kubernetes manifests
 - **Namespace**: Not set during helm template; handled by Flux `targetNamespace` at deploy time
-- **Base manifests**: Combined with `base/*.yaml` files via ytt, with component entry fields available as `data.values.component.*` (name, id, namespace, values)
+- **Component overrides**: Before rendering, the CLI deep-merges any `helm:` overrides from the component's entry in `cluster.yaml` into the merged component config. This allows per-instance customization (resources, replicas, etc.) without modifying the component template.
+- **Base manifests**: Combined with `base/*.yaml` files via ytt, with component entry fields available as `data.values.component.*` (name, id, namespace, helm)
 
 #### POST-RENDER Phase (All components)
 - **When**: After Helm rendering (or directly for plain components)

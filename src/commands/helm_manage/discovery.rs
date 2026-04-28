@@ -1,7 +1,6 @@
 use anyhow::Result;
 use std::fs;
 use walkdir::WalkDir;
-use serde::Deserialize;
 use serde_json::Value;
 use crate::paths;
 
@@ -65,11 +64,9 @@ pub fn discover_components() -> Result<Vec<ComponentInfo>> {
 }
 
 fn parse_ytt_yaml(content: &str) -> Value {
-    for doc in serde_yaml::Deserializer::from_str(content) {
-        if let Ok(value) = Value::deserialize(doc) {
-            if !value.is_null() {
-                return value;
-            }
+    for value in serde_saphyr::from_multiple::<Value>(content).unwrap_or_default() {
+        if !value.is_null() {
+            return value;
         }
     }
     Value::Null

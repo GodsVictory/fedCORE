@@ -45,16 +45,18 @@ pub fn build_single_artifact(
     if Path::new(&component_file).exists() {
         apply_prerender_overlays(&component_file, &cluster_file, temp_path, &pre_render, &platform_pre, &entry.component_data_values_yaml)?;
 
-        let component_data: MergedComponent = serde_yaml::from_str(
-            &fs::read_to_string(temp_path.join("component-merged.yaml"))?,
+        let merged_path = temp_path.join("component-merged.yaml");
+        apply_component_overrides(&merged_path, &entry.component_data_values_yaml)?;
+
+        let component_data: MergedComponent = serde_saphyr::from_str(
+            &fs::read_to_string(&merged_path)?,
         )?;
 
-        if component_data.helm.is_some() {
-            let helm_namespace = component_data.helm.as_ref()
-                .and_then(|h| h.namespace.as_deref())
+        if let Some(ref helm) = component_data.helm {
+            let helm_namespace = helm.namespace.as_deref()
                 .unwrap_or(&entry.component_namespace);
             output::detail("type: helm chart");
-            render_helm_chart(temp_path, &entry.component_id, helm_namespace, entry.helm_flags.as_deref())?;
+            render_helm_chart(temp_path, helm, &entry.component_id, helm_namespace)?;
             manifests_path = temp_path.join("helm-rendered.yaml");
         } else {
             output::detail("type: plain manifests");

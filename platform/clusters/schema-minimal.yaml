@@ -113,10 +113,6 @@ components:
   namespace: ""
 
   #@schema/nullable
-  #@schema/type any=True
-  helm_flags: []
-
-  #@schema/nullable
   version: "latest"
 
   #@schema/nullable
@@ -125,7 +121,7 @@ components:
 
   #@schema/nullable
   #@schema/type any=True
-  values: {}
+  helm: {}
 
 #! =============================================================================
 #! Tenants

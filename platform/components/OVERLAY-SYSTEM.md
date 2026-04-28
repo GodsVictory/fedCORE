@@ -199,13 +199,45 @@ spec:
           effect: NoSchedule
 ```
 
-## When to Use Pre-render vs Post-render
+## Component Helm Overrides (Preferred for Value Customization)
+
+Before reaching for overlays, consider using the `helm:` key on the component entry in `cluster.yaml`. The build pipeline deep-merges these overrides into the component's helm config after pre-render overlays are applied. This is the simplest way to customize helm values per cluster or per instance.
+
+```yaml
+# cluster.yaml
+components:
+  - name: kong-ingress
+    id: kong-dev
+    helm:
+      values:
+        gateway:
+          replicaCount: 1
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+        controller:
+          replicaCount: 1
+```
+
+The merge is recursive — only the keys you specify are overridden, everything else keeps the component.yaml defaults. This works for any helm value the chart exposes, and supports multiple instances of the same component with different configurations.
+
+### Use component `helm:` overrides when:
+- ✅ Adjusting resource sizing, replica counts, or feature flags per cluster
+- ✅ Running multiple instances of the same component with different configs
+- ✅ The override is specific to a single cluster or instance
+
+### Use pre-render overlays when:
+- ✅ The override applies to all clusters with a given cloud/environment
+- ✅ The overlay needs complex ytt logic (conditionals, loops, data.values references)
+- ✅ You need to append to arrays (overlays support `#@overlay/append`, deep merge replaces arrays)
+
+## When to Use Pre-render vs Post-render Overlays
 
 ### Use Pre-render when:
 - ✅ The Helm chart exposes the value you want to modify
-- ✅ You're adding environment variables, resource limits, replicas, etc.
+- ✅ The change applies to all clusters with a given cloud or environment
 - ✅ You want the chart's templating logic to apply (conditionals, loops)
-- ✅ You want cleaner, more maintainable overlays
 
 ### Use Post-render when:
 - ✅ Adding resources not in the Helm chart (CRDs, policies, etc.)
@@ -215,7 +247,8 @@ spec:
 
 ## Best Practices
 
-1. **Prefer pre-render** - Modify Helm values when possible, it's cleaner
+1. **Prefer component `helm:` overrides** - For per-cluster/per-instance value customization
+2. **Use pre-render overlays** - For cloud/environment-wide changes that need ytt logic
 2. **Separate files** - One file per overlay phase for clarity
 3. **Name files clearly** - `values-overlay.yaml` (pre-render), `aws-resources.yaml` (post-render)
 4. **Document phase** - Always include `#! overlay-phase:` comment
