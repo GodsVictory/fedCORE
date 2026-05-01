@@ -79,6 +79,14 @@ pub fn run_cmd_stdin(cmd: &str, args: &[&str], input: &[u8]) -> Result<Vec<u8>> 
     Ok(result.stdout)
 }
 
+pub fn resolve_cluster_yaml(cluster_dir: &str, temp_dir: &Path) -> Result<String> {
+    let raw = std::fs::read_to_string(format!("{}/cluster.yaml", cluster_dir))?;
+    let resolved = substitute_env_vars(&raw);
+    let resolved_path = temp_dir.join("cluster.yaml");
+    std::fs::write(&resolved_path, &resolved)?;
+    Ok(resolved_path.to_string_lossy().to_string())
+}
+
 pub fn read_cluster_metadata(cluster_file: &Path) -> Result<ClusterConfig> {
     let file_str = cluster_file.to_string_lossy();
     let stdout = run_cmd(
@@ -86,6 +94,25 @@ pub fn read_cluster_metadata(cluster_file: &Path) -> Result<ClusterConfig> {
         &["-f", &file_str, "--data-values-inspect", "-o", "json"],
     )?;
     serde_json::from_slice(&stdout).context("failed to parse cluster metadata")
+}
+
+fn substitute_env_vars(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find("${") {
+        result.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        if let Some(end) = after.find('}') {
+            let var_name = &after[..end];
+            result.push_str(&std::env::var(var_name).unwrap_or_default());
+            rest = &after[end + 1..];
+        } else {
+            result.push_str("${");
+            rest = after;
+        }
+    }
+    result.push_str(rest);
+    result
 }
 
 pub fn get_current_context() -> Result<String> {

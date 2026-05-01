@@ -1,7 +1,7 @@
 use anyhow::{Result, Context, bail};
 use std::path::Path;
 use std::fs;
-use crate::commands::{run_cmd, run_cmd_stdin, read_cluster_metadata};
+use crate::commands::{run_cmd, run_cmd_stdin, read_cluster_metadata, resolve_cluster_yaml};
 use crate::output;
 use crate::paths;
 use crate::types::ClusterConfig;
@@ -15,9 +15,11 @@ pub fn validate_bootstrap(cluster_dir: &str) -> Result<bool> {
 
 pub fn generate_bootstrap_config(cluster_dir: &str) -> Result<String> {
     validate_inputs(cluster_dir)?;
-    let metadata = extract_cluster_metadata(cluster_dir)?;
-    let infra = generate_infrastructure_from_metadata(&metadata, cluster_dir, None)?;
-    let sources = generate_component_sources(&metadata, cluster_dir)?;
+    let temp_dir = tempfile::tempdir()?;
+    let cluster_yaml = resolve_cluster_yaml(cluster_dir, temp_dir.path())?;
+    let metadata = read_cluster_metadata(Path::new(&cluster_yaml))?;
+    let infra = generate_infrastructure(&metadata, cluster_dir, &cluster_yaml, None)?;
+    let sources = generate_component_sources(&metadata, &cluster_yaml)?;
     Ok(format!("{}\n---\n{}", infra, sources))
 }
 
@@ -32,13 +34,16 @@ pub fn execute(
     output::header("Bootstrap");
 
     validate_inputs(cluster_dir)?;
-    let metadata = extract_cluster_metadata(cluster_dir)?;
+
+    let temp_dir = tempfile::tempdir()?;
+    let cluster_yaml = resolve_cluster_yaml(cluster_dir, temp_dir.path())?;
+    let metadata = read_cluster_metadata(Path::new(&cluster_yaml))?;
 
     output::summary(&metadata.cluster_name);
 
     if component_sources {
         output::section("Generating component-sources");
-        let sources_yaml = generate_component_sources(&metadata, cluster_dir)?;
+        let sources_yaml = generate_component_sources(&metadata, &cluster_yaml)?;
 
         if push {
             output::section("Pushing component-sources OCI artifact");
@@ -57,14 +62,14 @@ pub fn execute(
 
     if admin_prep {
         output::section("Generating admin-prep manifest");
-        let admin_yaml = generate_admin_prep(&metadata, cluster_dir, registry)?;
+        let admin_yaml = generate_admin_prep(&metadata, cluster_dir, &cluster_yaml, registry)?;
         println!("{}", admin_yaml);
         output::done("Admin-prep manifest generated — hand this to the cluster admin");
         return Ok(());
     }
 
     output::section("Generating bootstrap configuration");
-    let infra_yaml = generate_infrastructure_from_metadata(&metadata, cluster_dir, registry)?;
+    let infra_yaml = generate_infrastructure(&metadata, cluster_dir, &cluster_yaml, registry)?;
 
     if deploy {
         output::section("Deploying");
@@ -123,6 +128,7 @@ const TPL_DEPLOYER_RBAC: &str = include_str!("../templates/admin-prep-deployer-r
 fn generate_admin_prep(
     metadata: &ClusterConfig,
     cluster_dir: &str,
+    _cluster_yaml: &str,
     registry: Option<String>,
 ) -> Result<String> {
     let ns = &metadata.flux.namespace;
@@ -214,11 +220,6 @@ fn validate_inputs(cluster_dir: &str) -> Result<()> {
     Ok(())
 }
 
-fn extract_cluster_metadata(cluster_dir: &str) -> Result<ClusterConfig> {
-    let cluster_file = format!("{}/cluster.yaml", cluster_dir);
-    read_cluster_metadata(Path::new(&cluster_file))
-}
-
 fn collect_component_overlays(metadata: &ClusterConfig) -> Vec<String> {
     use crate::commands::matrix::find_component_path;
 
@@ -230,7 +231,7 @@ fn collect_component_overlays(metadata: &ClusterConfig) -> Vec<String> {
         };
         let overlay_path = format!("{}/overlay.yaml", path);
         if Path::new(&overlay_path).exists() {
-            output::detail(&format!("Including overlay from {}", component.id()));
+            output::detail(&format!("Including overlay from {}", component.name));
             overlays.push(overlay_path);
         }
     }
@@ -239,13 +240,13 @@ fn collect_component_overlays(metadata: &ClusterConfig) -> Vec<String> {
 
 fn generate_component_sources(
     metadata: &ClusterConfig,
-    cluster_dir: &str,
+    cluster_yaml: &str,
 ) -> Result<String> {
     let mut ytt_args = vec![
         "-f".to_string(),
         paths::CLUSTER_SCHEMA.to_string(),
         "-f".to_string(),
-        format!("{}/cluster.yaml", cluster_dir),
+        cluster_yaml.to_string(),
     ];
 
     for overlay_path in collect_component_overlays(metadata) {
@@ -263,11 +264,10 @@ fn generate_component_sources(
     Ok(String::from_utf8_lossy(&stdout).to_string())
 }
 
-/// Render infrastructure: Flux controllers, meta Kustomization, bootstrap secrets, CA certs.
-/// This output is applied directly via kubectl.
-fn generate_infrastructure_from_metadata(
+fn generate_infrastructure(
     metadata: &ClusterConfig,
     cluster_dir: &str,
+    cluster_yaml: &str,
     registry: Option<String>,
 ) -> Result<String> {
     let temp_dir = tempfile::tempdir()?;
@@ -318,7 +318,7 @@ fn generate_infrastructure_from_metadata(
         "-f".to_string(),
         paths::CLUSTER_SCHEMA.to_string(),
         "-f".to_string(),
-        format!("{}/cluster.yaml", cluster_dir),
+        cluster_yaml.to_string(),
     ];
 
     let flux_install_path = temp_path.join("flux-install.yaml");
@@ -348,8 +348,7 @@ fn generate_infrastructure_from_metadata(
     let ytt_args_str: Vec<&str> = ytt_args.iter().map(|s| s.as_str()).collect();
     let stdout = run_cmd("ytt", &ytt_args_str)?;
 
-    let infra_yaml = String::from_utf8_lossy(&stdout).to_string();
-    Ok(substitute_secrets(&infra_yaml))
+    Ok(String::from_utf8_lossy(&stdout).to_string())
 }
 
 fn push_component_sources(metadata: &ClusterConfig, sources_yaml: &str) -> Result<()> {
@@ -436,21 +435,6 @@ fn strip_resource_kinds(yaml: &str, exclude_kinds: &[String]) -> String {
     }
 
     out
-}
-
-fn substitute_secrets(yaml: &str) -> String {
-    let env_vars = [
-        "OCI_DOCKERCONFIG_JSON",
-        "SPLUNK_HEC_HOST",
-        "SPLUNK_HEC_TOKEN",
-    ];
-    let mut result = yaml.to_string();
-    for var in env_vars {
-        let placeholder = format!("${{{}}}", var);
-        let value = std::env::var(var).unwrap_or_default();
-        result = result.replace(&placeholder, &value);
-    }
-    result
 }
 
 fn deploy_infrastructure(yaml: &str) -> Result<()> {

@@ -6,8 +6,8 @@ use std::fs;
 use crate::output;
 use crate::paths;
 use crate::types::{BuildMatrixEntry, MergedComponent};
-use crate::commands::{read_cluster_metadata, TaskFailure, report_failures};
-use super::{utils::*, overlays::*, rendering::*};
+use crate::commands::{TaskFailure, report_failures, resolve_cluster_yaml};
+use super::{utils::*, overlays::*, rendering::render_helm_chart};
 
 pub fn build_single_artifact(
     entry: &BuildMatrixEntry,
@@ -20,34 +20,30 @@ pub fn build_single_artifact(
         bail!("cluster directory not found at {}", entry.cluster);
     }
 
-    let cluster_file = format!("{}/cluster.yaml", entry.cluster);
-    if !Path::new(&cluster_file).exists() {
-        bail!("cluster.yaml not found at {}", cluster_file);
-    }
-
-    let cluster_data = read_cluster_metadata(Path::new(&cluster_file))?;
-
     output::detail(&format!(
         "{} for {}",
-        entry.component_id, cluster_data.cluster_name
+        entry.component_id, entry.cluster_name
     ));
 
     let temp_dir = tempfile::tempdir()?;
     let temp_path = temp_dir.path();
 
-    let (pre_render, post_render) =
-        collect_overlays(&entry.artifact_path, &cluster_data.overlays)?;
-    let (platform_pre, platform_post) = collect_platform_overlays()?;
+    let cluster_file = resolve_cluster_yaml(&entry.cluster, temp_path)?;
+
+    let data_values_file = temp_path.join("component-values.yaml");
+    fs::write(&data_values_file, &entry.component_data_values_yaml)?;
+    let data_values_path = data_values_file.to_string_lossy().to_string();
+
+    let (pre_render_dirs, post_render_dirs) =
+        collect_overlay_dirs(&entry.artifact_path, &entry.overlays);
 
     let component_file = format!("{}/component.yaml", entry.artifact_path);
     let manifests_path;
 
     if Path::new(&component_file).exists() {
-        apply_prerender_overlays(&component_file, &cluster_file, temp_path, &pre_render, &platform_pre, &entry.component_data_values_yaml)?;
+        apply_prerender_overlays(&component_file, &cluster_file, temp_path, &pre_render_dirs, &data_values_path)?;
 
         let merged_path = temp_path.join("component-merged.yaml");
-        apply_component_overrides(&merged_path, &entry.component_data_values_yaml)?;
-
         let component_data: MergedComponent = serde_saphyr::from_str(
             &fs::read_to_string(&merged_path)?,
         )?;
@@ -69,13 +65,14 @@ pub fn build_single_artifact(
     }
 
     let base_dir = format!("{}/base", entry.artifact_path);
-    if Path::new(&base_dir).is_dir() {
-        render_base_manifests(&cluster_file, &base_dir, &manifests_path, &entry.component_data_values_yaml)?;
-        output::detail("base manifests rendered");
-    }
+    let base_dir_opt = if Path::new(&base_dir).is_dir() {
+        Some(base_dir.as_str())
+    } else {
+        None
+    };
 
     let post_overlay_content =
-        apply_postrender_overlays(&manifests_path, &cluster_file, &entry.cluster, &post_render, &platform_post, &entry.component_data_values_yaml)?;
+        apply_postrender_overlays(&manifests_path, &cluster_file, &entry.cluster, base_dir_opt, &post_render_dirs, &data_values_path)?;
 
     output::detail("resolving image tags to digests");
     let output_content = resolve_image_digests(&post_overlay_content)?;
@@ -84,7 +81,6 @@ pub fn build_single_artifact(
         fs::create_dir_all(paths::DIST_DIR)?;
         let output_file = format!("{}/{}.yaml", paths::DIST_DIR, entry.target_name);
         fs::write(&output_file, &output_content)?;
-        validate_yaml(&output_file)?;
         output::detail(&format!("wrote {}", output_file));
     }
 

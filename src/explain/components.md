@@ -35,5 +35,6 @@ Overlays can run at two points in the build pipeline:
   pre-render   Applied BEFORE helm template (modifies component.yaml values)
   post-render  Applied AFTER helm template (patches rendered manifests)
 
-Set the phase with a comment at the top of the overlay file:
-  #! overlay-phase: pre-render
+Place overlays in the appropriate subdirectory:
+  overlays/{cloud}/pre-render/   Applied before helm template
+  overlays/{cloud}/post-render/  Applied after helm template

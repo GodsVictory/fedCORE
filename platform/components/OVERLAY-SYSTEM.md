@@ -16,14 +16,16 @@ Some Helm charts expose values for configuration (e.g., `extraEnv`, `resources`,
 
 **Example:** Adding AWS environment variables to Tetragon
 ```yaml
-#! overlay-phase: pre-render
----
-#@overlay/match by=overlay.subset({"name": "tetragon"})
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#@overlay/match by=overlay.subset({"helm": {}}), expects="0+"
 ---
 helm:
   values:
     tetragon:
       extraEnv:
+        #@overlay/append
         - name: CLOUD_PROVIDER
           value: "aws"
 ```
@@ -36,7 +38,6 @@ Some resources cannot be configured via Helm values:
 
 **Example:** Adding AWS-specific TracingPolicies
 ```yaml
-#! overlay-phase: post-render
 ---
 apiVersion: cilium.io/v1alpha1
 kind: TracingPolicy
@@ -46,74 +47,68 @@ spec:
   # ... policy definition
 ```
 
-## Declaring Overlay Phase
-
-Add a metadata comment at the top of your overlay file:
-
-```yaml
-#! overlay-phase: pre-render
-#! OR
-#! overlay-phase: post-render
-```
-
-If no metadata is present, the overlay defaults to `post-render` (backward compatible).
-
 ## Overlay Directory Structure
 
-```
-platform/overlays/                        # Platform-level overlays (applied to ALL artifacts)
-└── chart-repo-overlay.yaml               # overlay-phase: pre-render (injects resolvedChartRef)
+Overlay phase is determined by directory placement — **pre-render/** or **post-render/** subdirectories:
 
-platform/components/<component>/overlays/ # Component-level overlays (per cloud/environment)
+```
+platform/components/<component>/overlays/
 ├── aws/
-│   ├── values-overlay.yaml               # overlay-phase: pre-render
-│   └── aws-resources.yaml                # overlay-phase: post-render
+│   ├── pre-render/
+│   │   └── service-annotations.yaml     # Modifies helm values before rendering
+│   └── post-render/
+│       └── aws-policies.yaml            # Patches rendered manifests
 ├── azure/
-│   └── values-overlay.yaml
+│   ├── pre-render/
+│   │   └── env-config.yaml
+│   └── post-render/
+│       └── azure-policies.yaml
 ├── prod/
-│   └── ha-overlay.yaml                   # overlay-phase: pre-render
+│   ├── pre-render/
+│   │   └── ha-config.yaml               # Scale up replicas for prod
+│   └── post-render/
+│       └── security-policies.yaml
 └── dev/
-    └── dev-overlay.yaml
+    └── post-render/
+        └── dev-overlay.yaml
 
 platform/clusters/<cluster>/overlays/     # Cluster-level overlays (always post-render)
-└── karpenter-tolerations.yaml            # overlay-phase: post-render
+└── karpenter-tolerations.yaml
 ```
 
 ## Build Flow
 
 ```bash
-# 1. Collect overlays by phase
-for each cloud/environment overlay:
-  if "overlay-phase: pre-render" → PRE_RENDER_OVERLAYS[]
-  else → POST_RENDER_OVERLAYS[]
+# 1. Resolve cluster.yaml (envsubst for ${VAR} placeholders)
+# 2. Resolve component matrix (ytt matrix template)
 
-# Also collect platform-level overlays from platform/overlays/
-for each platform overlay:
-  if "overlay-phase: pre-render" → PLATFORM_PRE_OVERLAYS[]
-  else → PLATFORM_POST_OVERLAYS[]
-
-# 2. Apply pre-render overlays to component.yaml
-#    Platform overlays (e.g., chart-repo-overlay) are included here too
-ytt -f schema.yaml -f cluster.yaml -f component.yaml -f ${PLATFORM_PRE_OVERLAYS[@]} -f ${PRE_RENDER_OVERLAYS[@]}
+# 3. Pre-render: merge component.yaml with cluster values + overlays
+ytt -f schema.yaml \
+    -f cluster.yaml \
+    -f component.yaml \
+    -f platform/build/prerender/ \
+    --data-values-file component-values.yaml \
+    -f overlays/{cloud}/pre-render/ \
+    -f overlays/{env}/pre-render/
   → component-merged.yaml
-
-# 3. Extract helm.values and chart source from merged output
-#    resolvedChartRef is set by the platform chart-repo overlay when use_mirror=true
-extract_helm_values(component-merged.yaml)
-  → values.yaml
-CHART_REF = resolvedChartRef || sourceRepo
+# platform/build/prerender/ handles:
+#   - chart mirror URL injection (resolvedChartRef)
+#   - deep merge of cluster-level helm.values overrides
 
 # 4. Render Helm chart with merged values
-helm pull $CHART_REF/$CHART --version $VERSION
-helm template --values values.yaml
+helm template {release_name} {chart} --values values.yaml
   → helm-rendered.yaml
 
-# 5. Combine with base/ resources
-cat helm-rendered.yaml base/*.yaml
-  → combined.yaml
-
-# 6. Apply post-render overlays
-ytt -f schema.yaml -f cluster.yaml -f combined.yaml -f ${PLATFORM_POST_OVERLAYS[@]} -f ${POST_RENDER_OVERLAYS[@]} -f cluster/overlays/
+# 5. Post-render + base manifests in one ytt call
+ytt --ignore-unknown-comments \
+    -f schema.yaml \
+    -f cluster.yaml \
+    -f helm-rendered.yaml \
+    --data-values-file component-values.yaml \
+    -f base/ \
+    -f overlays/{cloud}/post-render/ \
+    -f overlays/{env}/post-render/ \
+    -f cluster/overlays/
   → final.yaml
 ```
 
@@ -121,14 +116,12 @@ ytt -f schema.yaml -f cluster.yaml -f combined.yaml -f ${PLATFORM_POST_OVERLAYS[
 
 ### Example 1: Tetragon AWS Configuration
 
-**Pre-render** (`platform/components/tetragon/overlays/aws/values-overlay.yaml`):
+**Pre-render** (`platform/components/tetragon/overlays/aws/pre-render/env-config.yaml`):
 ```yaml
 #@ load("@ytt:data", "data")
 #@ load("@ytt:overlay", "overlay")
 
-#! overlay-phase: pre-render
----
-#@overlay/match by=overlay.subset({"name": "tetragon"})
+#@overlay/match by=overlay.subset({"helm": {}}), expects="0+"
 ---
 helm:
   values:
@@ -143,11 +136,9 @@ helm:
           value: #@ data.values.region
 ```
 
-**Post-render** (`platform/components/tetragon/overlays/aws/aws-policies.yaml`):
+**Post-render** (`platform/components/tetragon/overlays/aws/post-render/aws-policies.yaml`):
 ```yaml
 #@ load("@ytt:data", "data")
-
-#! overlay-phase: post-render
 ---
 apiVersion: cilium.io/v1alpha1
 kind: TracingPolicy
@@ -162,13 +153,11 @@ spec:
 
 ### Example 2: High Availability Overlay
 
-**Pre-render** (`platform/components/kyverno/overlays/prod/ha-overlay.yaml`):
+**Pre-render** (`platform/components/kyverno/overlays/prod/pre-render/ha-overlay.yaml`):
 ```yaml
 #@ load("@ytt:overlay", "overlay")
 
-#! overlay-phase: pre-render
----
-#@overlay/match by=overlay.subset({"name": "kyverno"})
+#@overlay/match by=overlay.subset({"helm": {}}), expects="0+"
 ---
 helm:
   values:
@@ -184,9 +173,6 @@ helm:
 ```yaml
 #@ load("@ytt:overlay", "overlay")
 
-#! overlay-phase: post-render
-#! Note: Cluster overlays are always post-render
-
 #@overlay/match by=overlay.subset({"kind": "Deployment"}), expects="0+"
 ---
 spec:
@@ -201,7 +187,7 @@ spec:
 
 ## Component Helm Overrides (Preferred for Value Customization)
 
-Before reaching for overlays, consider using the `helm:` key on the component entry in `cluster.yaml`. The build pipeline deep-merges these overrides into the component's helm config after pre-render overlays are applied. This is the simplest way to customize helm values per cluster or per instance.
+Before reaching for overlays, consider using the `helm:` key on the component entry in `cluster.yaml`. The build pipeline deep-merges these overrides into the component's helm config during pre-render (via the ytt overlay in `platform/build/prerender/`). This is the simplest way to customize helm values per cluster or per instance.
 
 ```yaml
 # cluster.yaml
@@ -223,69 +209,35 @@ components:
 The merge is recursive — only the keys you specify are overridden, everything else keeps the component.yaml defaults. This works for any helm value the chart exposes, and supports multiple instances of the same component with different configurations.
 
 ### Use component `helm:` overrides when:
-- ✅ Adjusting resource sizing, replica counts, or feature flags per cluster
-- ✅ Running multiple instances of the same component with different configs
-- ✅ The override is specific to a single cluster or instance
+- Adjusting resource sizing, replica counts, or feature flags per cluster
+- Running multiple instances of the same component with different configs
+- The override is specific to a single cluster or instance
 
 ### Use pre-render overlays when:
-- ✅ The override applies to all clusters with a given cloud/environment
-- ✅ The overlay needs complex ytt logic (conditionals, loops, data.values references)
-- ✅ You need to append to arrays (overlays support `#@overlay/append`, deep merge replaces arrays)
+- The override applies to all clusters with a given cloud/environment
+- The overlay needs complex ytt logic (conditionals, loops, data.values references)
+- You need to append to arrays (overlays support `#@overlay/append`, deep merge replaces arrays)
 
 ## When to Use Pre-render vs Post-render Overlays
 
 ### Use Pre-render when:
-- ✅ The Helm chart exposes the value you want to modify
-- ✅ The change applies to all clusters with a given cloud or environment
-- ✅ You want the chart's templating logic to apply (conditionals, loops)
+- The Helm chart exposes the value you want to modify
+- The change applies to all clusters with a given cloud or environment
+- You want the chart's templating logic to apply (conditionals, loops)
 
 ### Use Post-render when:
-- ✅ Adding resources not in the Helm chart (CRDs, policies, etc.)
-- ✅ The Helm chart doesn't expose the field you need to modify
-- ✅ Applying universal patches (cluster tolerations, labels)
-- ✅ Patching rendered resources in ways not supported by chart values
+- Adding resources not in the Helm chart (CRDs, policies, etc.)
+- The Helm chart doesn't expose the field you need to modify
+- Applying universal patches (cluster tolerations, labels)
+- Patching rendered resources in ways not supported by chart values
 
 ## Best Practices
 
 1. **Prefer component `helm:` overrides** - For per-cluster/per-instance value customization
 2. **Use pre-render overlays** - For cloud/environment-wide changes that need ytt logic
-2. **Separate files** - One file per overlay phase for clarity
-3. **Name files clearly** - `values-overlay.yaml` (pre-render), `aws-resources.yaml` (post-render)
-4. **Document phase** - Always include `#! overlay-phase:` comment
+3. **Separate files by phase** - Place in `pre-render/` or `post-render/` subdirectory
+4. **Name files clearly** - `service-annotations.yaml` (pre-render), `aws-policies.yaml` (post-render)
 5. **Test both phases** - Verify overlays work: `fedcore build -a <component> -c <cluster>`
-
-## Migration from Old System
-
-If you have overlays that patch rendered manifests (post-render), consider if they can be converted to pre-render overlays:
-
-**Before (post-render):**
-```yaml
-#@overlay/match by=overlay.subset({"kind": "DaemonSet", "metadata": {"name": "tetragon"}})
----
-spec:
-  template:
-    spec:
-      containers:
-      - name: tetragon
-        env:
-        - name: CLOUD_PROVIDER
-          value: "aws"
-```
-
-**After (pre-render):**
-```yaml
-#! overlay-phase: pre-render
-#@overlay/match by=overlay.subset({"name": "tetragon"})
----
-helm:
-  values:
-    tetragon:
-      extraEnv:
-        - name: CLOUD_PROVIDER
-          value: "aws"
-```
-
-The pre-render version is simpler, doesn't require matching container names, and leverages the chart's built-in support.
 
 ## Bootstrap Overlays (overlay.yaml)
 
@@ -322,12 +274,12 @@ This ensures `tenant-instances` always depends on `namespace` without users havi
 
 ### When to Use
 
-- ✅ Setting `depends_on` for a component (most common use case)
-- ✅ Injecting default data values that are component-specific
-- ✅ Any cluster data value override that should travel with the component
+- Setting `depends_on` for a component (most common use case)
+- Injecting default data values that are component-specific
+- Any cluster data value override that should travel with the component
 
 ### When NOT to Use
 
-- ❌ Modifying Helm values (use pre-render overlays instead)
-- ❌ Adding Kubernetes resources (use post-render overlays or base/ manifests)
-- ❌ Cluster-specific customizations (use cluster overlays in `platform/clusters/{cluster}/overlays/`)
+- Modifying Helm values (use pre-render overlays instead)
+- Adding Kubernetes resources (use post-render overlays or base/ manifests)
+- Cluster-specific customizations (use cluster overlays in `platform/clusters/{cluster}/overlays/`)

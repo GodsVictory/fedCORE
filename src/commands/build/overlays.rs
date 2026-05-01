@@ -1,88 +1,39 @@
 use anyhow::Result;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::fs;
-use walkdir::WalkDir;
 use crate::commands::run_cmd;
 use crate::output;
 use crate::paths;
 
-pub fn collect_overlays(
+pub fn collect_overlay_dirs(
     artifact_path: &str,
     overlays: &[String],
-) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+) -> (Vec<String>, Vec<String>) {
     let mut pre_render = Vec::new();
     let mut post_render = Vec::new();
 
     for id in overlays {
-        let dir = format!("{}/overlays/{}", artifact_path, id);
-        if !Path::new(&dir).is_dir() {
-            continue;
+        let pre = format!("{}/overlays/{}/pre-render", artifact_path, id);
+        if Path::new(&pre).is_dir() {
+            pre_render.push(pre);
         }
-        for entry in WalkDir::new(&dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "yaml"))
-        {
-            let phase = get_overlay_phase(entry.path())?;
-            if phase == "pre-render" {
-                pre_render.push(entry.path().to_path_buf());
-            } else {
-                post_render.push(entry.path().to_path_buf());
-            }
+
+        let post = format!("{}/overlays/{}/post-render", artifact_path, id);
+        if Path::new(&post).is_dir() {
+            post_render.push(post);
         }
     }
 
-    Ok((pre_render, post_render))
-}
-
-pub fn collect_platform_overlays() -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
-    let mut pre_render = Vec::new();
-    let mut post_render = Vec::new();
-
-    let dir = Path::new(paths::PLATFORM_OVERLAYS);
-    if !dir.is_dir() {
-        return Ok((pre_render, post_render));
-    }
-
-    for entry in WalkDir::new(dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "yaml"))
-    {
-        let phase = get_overlay_phase(entry.path())?;
-        if phase == "pre-render" {
-            pre_render.push(entry.path().to_path_buf());
-        } else {
-            post_render.push(entry.path().to_path_buf());
-        }
-    }
-
-    Ok((pre_render, post_render))
-}
-
-fn get_overlay_phase(file_path: &Path) -> Result<String> {
-    let content = fs::read_to_string(file_path)?;
-    for line in content.lines() {
-        if line.starts_with("#! overlay-phase:") {
-            return Ok(line.replace("#! overlay-phase:", "").trim().to_string());
-        }
-    }
-    Ok("post-render".to_string())
+    (pre_render, post_render)
 }
 
 pub fn apply_prerender_overlays(
     component_file: &str,
     cluster_file: &str,
     temp_dir: &Path,
-    overlays: &[PathBuf],
-    platform_overlays: &[PathBuf],
-    component_data_values_yaml: &str,
+    overlay_dirs: &[String],
+    data_values_path: &str,
 ) -> Result<()> {
-    let data_values_file = temp_dir.join("component-values.yaml");
-    fs::write(&data_values_file, component_data_values_yaml)?;
-
     let mut args = vec![
         "-f".to_string(),
         paths::CLUSTER_SCHEMA.to_string(),
@@ -90,20 +41,17 @@ pub fn apply_prerender_overlays(
         cluster_file.to_string(),
         "-f".to_string(),
         component_file.to_string(),
+        "-f".to_string(),
+        paths::BUILD_PRERENDER_DIR.to_string(),
         "--data-values-file".to_string(),
-        data_values_file.to_string_lossy().to_string(),
+        data_values_path.to_string(),
     ];
 
-    for overlay in platform_overlays {
-        args.push("-f".to_string());
-        args.push(overlay.to_string_lossy().to_string());
-    }
-
-    if !overlays.is_empty() {
-        output::detail(&format!("{} pre-render overlay(s)", overlays.len()));
-        for overlay in overlays {
+    if !overlay_dirs.is_empty() {
+        output::detail(&format!("{} pre-render overlay dir(s)", overlay_dirs.len()));
+        for dir in overlay_dirs {
             args.push("-f".to_string());
-            args.push(overlay.to_string_lossy().to_string());
+            args.push(dir.clone());
         }
     }
 
@@ -118,13 +66,10 @@ pub fn apply_postrender_overlays(
     manifests_path: &Path,
     cluster_file: &str,
     cluster_dir: &str,
-    overlays: &[PathBuf],
-    platform_overlays: &[PathBuf],
-    component_data_values_yaml: &str,
+    base_dir: Option<&str>,
+    overlay_dirs: &[String],
+    data_values_path: &str,
 ) -> Result<String> {
-    let data_values_file = manifests_path.with_extension("postrender-component-values.yaml");
-    fs::write(&data_values_file, component_data_values_yaml)?;
-
     let mut args = vec![
         "--ignore-unknown-comments".to_string(),
         "-f".to_string(),
@@ -134,19 +79,20 @@ pub fn apply_postrender_overlays(
         "-f".to_string(),
         manifests_path.to_string_lossy().to_string(),
         "--data-values-file".to_string(),
-        data_values_file.to_string_lossy().to_string(),
+        data_values_path.to_string(),
     ];
 
-    for overlay in platform_overlays {
+    if let Some(base) = base_dir {
+        output::detail("including base manifests");
         args.push("-f".to_string());
-        args.push(overlay.to_string_lossy().to_string());
+        args.push(base.to_string());
     }
 
-    if !overlays.is_empty() {
-        output::detail(&format!("{} post-render overlay(s)", overlays.len()));
-        for overlay in overlays {
+    if !overlay_dirs.is_empty() {
+        output::detail(&format!("{} post-render overlay dir(s)", overlay_dirs.len()));
+        for dir in overlay_dirs {
             args.push("-f".to_string());
-            args.push(overlay.to_string_lossy().to_string());
+            args.push(dir.clone());
         }
     }
 

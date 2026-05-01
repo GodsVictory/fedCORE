@@ -1,0 +1,40 @@
+#@ load("@ytt:overlay", "overlay")
+#@ load("@ytt:data", "data")
+
+#@ def merge(left, right):
+#@   if type(left) == "yamlfragment":
+#@     left = dict(left)
+#@   end
+#@   if type(right) == "yamlfragment":
+#@     right = dict(right)
+#@   end
+#@   if type(left) != "dict" or type(right) != "dict":
+#@     return right
+#@   end
+#@   result = dict(left)
+#@   for k in right:
+#@     if k in result:
+#@       result[k] = merge(result[k], right[k])
+#@     else:
+#@       result[k] = right[k]
+#@     end
+#@   end
+#@   return result
+#@ end
+
+#@ repos = data.values.helm_repositories
+#@ use_mirror = repos.use_mirror
+#@ mirror_ref = "oci://" + repos.oci_registry + "/" + repos.chart_repo if use_mirror else ""
+
+#@overlay/match by=overlay.subset({"helm": {}}), expects="0+"
+---
+helm:
+  #@overlay/match missing_ok=True
+  resolvedChartRef: #@ mirror_ref
+
+  #@ component = data.values.component
+  #@ has_helm_overrides = hasattr(component, "helm") and component.helm and hasattr(component.helm, "values") and component.helm.values
+  #@ if has_helm_overrides:
+  #@overlay/replace via=lambda left, right: merge(left, right)
+  values: #@ component.helm.values
+  #@ end

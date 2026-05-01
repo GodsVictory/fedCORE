@@ -1,10 +1,52 @@
-use anyhow::Result;
+use anyhow::{Result, Context, bail};
 use std::path::Path;
 use walkdir::WalkDir;
-use crate::commands::{read_cluster_metadata, normalize_path};
+use crate::commands::{run_cmd, normalize_path, resolve_cluster_yaml};
 use crate::output;
 use crate::paths;
 use crate::types::{BuildMatrix, BuildMatrixEntry, ClusterMatrixEntry};
+
+fn resolve_cluster(cluster_dir: &str, cluster_yaml: &str) -> Result<(String, Vec<String>, Vec<BuildMatrixEntry>)> {
+    let stdout = run_cmd(
+        "ytt",
+        &["-f", paths::CLUSTER_SCHEMA, "-f", cluster_yaml, "-f", paths::BUILD_MATRIX_DIR],
+    )?;
+    let stdout_str = String::from_utf8_lossy(&stdout);
+    let mut docs = stdout_str.split("\n---").map(|s| s.trim()).filter(|s| !s.is_empty());
+
+    let header: serde_json::Value = serde_saphyr::from_str(
+        docs.next().context("empty matrix output")?,
+    ).context("failed to parse cluster header")?;
+
+    let cluster_name = header["cluster_name"].as_str().context("missing cluster_name")?.to_string();
+    let overlays: Vec<String> = header["overlays"].as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+
+    let mut entries = Vec::new();
+    for doc in docs {
+        let val: serde_json::Value = serde_saphyr::from_str(doc)
+            .context("failed to parse component entry")?;
+        let c = &val["component"];
+        let name = c["name"].as_str().context("missing component name")?;
+        let id = c["id"].as_str().context("missing component id")?;
+
+        if let Some(artifact_path) = find_component_path(name) {
+            entries.push(BuildMatrixEntry {
+                artifact_path,
+                cluster: cluster_dir.to_string(),
+                cluster_name: cluster_name.clone(),
+                target_name: format!("{}-{}", id, cluster_name),
+                component_id: id.to_string(),
+                component_namespace: c["namespace"].as_str().unwrap_or(id).to_string(),
+                component_data_values_yaml: doc.to_string(),
+                overlays: overlays.clone(),
+            });
+        }
+    }
+
+    Ok((cluster_name, overlays, entries))
+}
 
 pub fn discover_matrix() -> Result<BuildMatrix> {
     let mut build_matrix = Vec::new();
@@ -18,94 +60,63 @@ pub fn discover_matrix() -> Result<BuildMatrix> {
         .filter(|e| e.file_type().is_dir())
     {
         let cluster_dir = entry.path();
-        let cluster_file = cluster_dir.join("cluster.yaml");
-
-        if !cluster_file.exists() {
+        if !cluster_dir.join("cluster.yaml").exists() {
             continue;
         }
 
-        let config = read_cluster_metadata(&cluster_file)?;
+        let dir_str = normalize_path(&cluster_dir.to_string_lossy());
+        let temp = tempfile::tempdir()?;
+        let cluster_yaml = resolve_cluster_yaml(&dir_str, temp.path())?;
+        let (cluster_name, _, entries) = resolve_cluster(&dir_str, &cluster_yaml)?;
 
-        for component in &config.components {
-            if let Some(path) = find_component_path(&component.name) {
-                build_matrix.push(BuildMatrixEntry {
-                    artifact_path: path,
-                    cluster: normalize_path(&cluster_dir.to_string_lossy()),
-                    cluster_name: config.cluster_name.clone(),
-                    target_name: format!("{}-{}", component.id(), config.cluster_name),
-                    component_id: component.id().to_string(),
-                    component_namespace: component.namespace().to_string(),
-                    component_data_values_yaml: component.to_data_values_yaml(),
-                });
-            }
-        }
-
+        build_matrix.extend(entries);
         cluster_matrix.push(ClusterMatrixEntry {
-            cluster: normalize_path(&cluster_dir.to_string_lossy()),
-            cluster_name: config.cluster_name.clone(),
+            cluster: dir_str,
+            cluster_name,
         });
     }
 
-    Ok(BuildMatrix {
-        build_matrix,
-        cluster_matrix,
-    })
+    Ok(BuildMatrix { build_matrix, cluster_matrix })
 }
 
 pub fn discover_cluster_artifacts(cluster_dir: &str) -> Result<Vec<BuildMatrixEntry>> {
     let normalized = normalize_path(cluster_dir);
     let normalized = normalized.trim_end_matches('/');
-    let full_matrix = discover_matrix()?;
-    Ok(full_matrix
-        .build_matrix
-        .into_iter()
-        .filter(|a| a.cluster == normalized)
-        .collect())
+    if !Path::new(&normalized).join("cluster.yaml").exists() {
+        bail!("cluster.yaml not found in {}", normalized);
+    }
+    let temp = tempfile::tempdir()?;
+    let cluster_yaml = resolve_cluster_yaml(normalized, temp.path())?;
+    let (_, _, entries) = resolve_cluster(normalized, &cluster_yaml)?;
+    Ok(entries)
 }
 
 pub fn execute() -> Result<()> {
     output::header("Matrix");
-
     let result = discover_matrix()?;
 
     output::section("OCI Artifacts");
     for item in &result.build_matrix {
         output::item_ok(&item.target_name);
     }
-
     output::section("Clusters");
     for item in &result.cluster_matrix {
         output::item_ok(&item.cluster_name);
     }
-
-    output::done(&format!(
-        "{} artifacts, {} clusters",
-        result.build_matrix.len(),
-        result.cluster_matrix.len()
-    ));
-
+    output::done(&format!("{} artifacts, {} clusters", result.build_matrix.len(), result.cluster_matrix.len()));
     println!("{}", serde_json::to_string_pretty(&result)?);
-
     Ok(())
 }
 
 pub fn find_component_path(component_name: &str) -> Option<String> {
-    let components_path = format!("{}/{}", paths::COMPONENTS_DIR, component_name);
-    let rgds_path = format!("{}/{}", paths::RGDS_DIR, component_name);
-
-    if Path::new(&components_path).is_dir()
-        && (Path::new(&format!("{}/base", components_path)).is_dir()
-            || Path::new(&format!("{}/component.yaml", components_path)).exists())
-    {
-        return Some(components_path);
+    for base in [paths::COMPONENTS_DIR, paths::RGDS_DIR] {
+        let path = format!("{}/{}", base, component_name);
+        if Path::new(&path).is_dir()
+            && (Path::new(&format!("{}/base", path)).is_dir()
+                || Path::new(&format!("{}/component.yaml", path)).exists())
+        {
+            return Some(path);
+        }
     }
-
-    if Path::new(&rgds_path).is_dir()
-        && (Path::new(&format!("{}/base", rgds_path)).is_dir()
-            || Path::new(&format!("{}/component.yaml", rgds_path)).exists())
-    {
-        return Some(rgds_path);
-    }
-
     None
 }

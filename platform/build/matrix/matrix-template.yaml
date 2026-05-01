@@ -1,0 +1,22 @@
+#@ load("@ytt:data", "data")
+
+---
+cluster_name: #@ data.values.cluster_name
+overlays: #@ data.values.overlays
+
+#@ for c in data.values.components:
+---
+component:
+  name: #@ c.name
+  id: #@ c.id or c.name
+  namespace: #@ c.namespace or c.id or c.name
+  #@ if c.version:
+  version: #@ c.version
+  #@ end
+  #@ if c.depends_on:
+  depends_on: #@ c.depends_on
+  #@ end
+  #@ if c.helm:
+  helm: #@ c.helm
+  #@ end
+#@ end

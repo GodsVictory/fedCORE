@@ -8,16 +8,16 @@ flowchart TB
 
     subgraph discovery["1️⃣ Discovery Phase"]
         B{"Build Mode?"}
-        C1["Run fedcore matrix<br/>Scan platform/clusters/*.yaml<br/>Scan platform/components/*"]
+        C1["Run fedcore matrix<br/>Scan platform/clusters/*.yaml"]
         C2["Generate Build Matrix<br/>component × cluster pairs"]
-        D1["Use provided paths<br/>--artifact artifact_path<br/>--cluster cluster_dir"]
+        D1["Use provided cluster path<br/>--cluster cluster_dir"]
+        D2["envsubst cluster.yaml<br/>Resolve ${VAR} placeholders"]
+        D3["ytt matrix template<br/>Resolve component id, namespace,<br/>data values per component"]
     end
 
     subgraph iteration["2️⃣ For Each Component × Cluster"]
         direction TB
 
-        E["Load cluster.yaml<br/>Extract metadata using ytt"]
-        F["Extract: cluster_name, cloud, environment, region"]
         G["Read component.yaml (if exists)"]
         H{"Component Type?"}
 
@@ -25,38 +25,30 @@ flowchart TB
             direction TB
 
             subgraph prerender["🔧 PRE-RENDER Phase"]
-                I1["Scan overlays/{cloud}/<br/>Filter files with:<br/>#! overlay-phase: pre-render"]
-                I2["Scan overlays/{env}/<br/>Filter files with:<br/>#! overlay-phase: pre-render"]
-                I3["Apply overlays to component.yaml<br/>using ytt"]
-                I4["Modify helm.values section<br/>in component metadata"]
-                I5["Deep merge cluster component<br/>helm overrides into<br/>component-merged.yaml"]
+                I1["ytt: schema + cluster.yaml +<br/>component.yaml + prerender/<br/>+ overlays/{id}/pre-render/"]
+                I2["prerender/ overlay handles:<br/>• Chart mirror URL injection<br/>• Deep merge cluster helm overrides"]
+                I3["Output: component-merged.yaml"]
             end
 
             subgraph render["🎨 RENDER Phase"]
-                J1["Extract helm configuration:<br/>chart, version, repo, values"]
-                J2["helm template {release_name} {chart_url}<br/>--version {version}<br/>--values values.yaml<br/>--include-crds"]
-                J3["Save rendered output to temp file"]
-                J4["Scan base/ directory<br/>Find additional manifests<br/>e.g., namespace.yaml"]
-                J5["Combine rendered chart + base manifests<br/>with --data-values-file component-values.yaml"]
+                J1["Extract helm config from merged output"]
+                J2["helm template {release_name} {chart}<br/>--namespace {namespace}<br/>--values values.yaml"]
+                J3["Output: helm-rendered.yaml"]
             end
         end
 
         subgraph plain_path["📄 Plain Manifest Path"]
-            K1["Load all files from base/*.yaml<br/>Plain Kubernetes manifests"]
+            K1["Empty manifest placeholder<br/>(base/ dir provides content)"]
         end
 
         subgraph postrender["🎯 POST-RENDER Phase (All Components)"]
             direction TB
-            L1["Collect cloud overlays:<br/>overlays/{cloud}/*.yaml<br/>Files with #! overlay-phase: post-render<br/>or no phase metadata (default)"]
-            L2["Collect environment overlays:<br/>overlays/{env}/*.yaml<br/>Files with #! overlay-phase: post-render<br/>or no phase metadata (default)"]
-            L3["Collect cluster overlays:<br/>platform/clusters/{cluster}/overlays/*.yaml<br/>Always post-render phase"]
-            L4["ytt processing:<br/>-f platform/clusters/schema.yaml<br/>-f cluster.yaml<br/>-f manifests<br/>-f cloud_overlays<br/>-f env_overlays<br/>-f cluster_overlays"]
+            L1["ytt: schema + cluster.yaml +<br/>rendered manifests +<br/>base/ (if exists) +<br/>overlays/{id}/post-render/ +<br/>cluster/overlays/"]
+            L2["All applied in single ytt call"]
         end
 
         M["💾 Output Artifact"]
-        N["Save to dist/{component}-{cluster}.yaml<br/>or stdout if no --push"]
-        O["Validate artifact with ytt"]
-        P{"Validation OK?"}
+        N["Save to dist/{component}-{cluster}.yaml"]
     end
 
     subgraph push_phase["3️⃣ Push Phase (if --push flag)"]
@@ -78,31 +70,32 @@ flowchart TB
     %% Main flow
     A --> B
     B -->|"--all"| C1
-    B -->|"-a & -c"| D1
-    C1 --> C2 --> E
-    D1 --> E
+    B -->|"-c"| D1
+    C1 --> C2
+    C2 --> D2
+    D1 --> D2
+    D2 --> D3
+    D3 --> G
 
     %% Per-artifact flow
-    E --> F --> G --> H
+    G --> H
 
     %% Component type branching
-    H -->|"type: helm<br/>in component.yaml"| I1
-    H -->|"type: plain<br/>or no component.yaml"| K1
+    H -->|"has helm: section<br/>in component.yaml"| I1
+    H -->|"no component.yaml<br/>or no helm: section"| K1
 
     %% Helm flow
-    I1 --> I2 --> I3 --> I4 --> I5
-    I5 --> J1 --> J2 --> J3 --> J4 --> J5
+    I1 --> I2 --> I3
+    I3 --> J1 --> J2 --> J3
 
     %% Flows converge at post-render
-    J5 --> L1
+    J3 --> L1
     K1 --> L1
 
     %% Post-render and output
-    L1 --> L2 --> L3 --> L4
-    L4 --> M --> N --> O --> P
-    P -->|"Valid"| Q
-    P -->|"Invalid"| S
-
+    L1 --> L2
+    L2 --> M --> N --> Q
+    
     %% Push decision
     Q -->|"--push provided"| R1
     Q -->|"No --push"| S
@@ -123,9 +116,9 @@ flowchart TB
     classDef errorStyle fill:#800000,stroke:#ff6666,stroke-width:2px,color:#fff
 
     class A entryStyle
-    class B,C1,C2,D1 discoveryStyle
-    class E,F,G,H,M,N,O,P processStyle
-    class I1,I2,I3,I4,J1,J2,J3,J4,J5,K1,L1,L2,L3,L4 phaseStyle
+    class B,C1,C2,D1,D2,D3 discoveryStyle
+    class G,H,M,N processStyle
+    class I1,I2,I3,J1,J2,J3,K1,L1,L2 phaseStyle
     class Q,R1,R2,R3,R4 pushStyle
     class S,T,U completeStyle
     class V errorStyle
@@ -133,181 +126,128 @@ flowchart TB
 
 ## Example: Building an Artifact with Raw ytt + helm Commands
 
-This walks through building the `capsule` component for the `aws-example-usgw1-dev-app` cluster using the same ytt and helm commands the Rust CLI executes under the hood.
+This walks through building the `headlamp` component for the `aws-csb-usgw1-dev-app` cluster using the same tool invocations the Rust CLI executes.
 
 ### Setup
 
 ```bash
-ARTIFACT=platform/components/capsule
-CLUSTER=platform/clusters/aws-example-usgw1-dev-app
+ARTIFACT=platform/components/headlamp
+CLUSTER=platform/clusters/aws-csb-usgw1-dev-app
 TMPDIR=$(mktemp -d)
 ```
 
-### Step 1: Pre-Render — Merge component.yaml with cluster data values
+### Step 1: Resolve cluster.yaml and discover components
 
-ytt renders the component.yaml template (which uses `@ytt:data` for cluster-aware values) against the cluster schema and cluster config. If there were pre-render overlays (`#! overlay-phase: pre-render`), they'd be appended as additional `-f` args.
+Any `${VAR}` placeholders in cluster.yaml are resolved from environment variables before any tool processes the file. The matrix template then resolves each component's id, namespace, and data values.
+
+```bash
+# envsubst cluster.yaml (the CLI does this automatically)
+envsubst < $CLUSTER/cluster.yaml > $TMPDIR/cluster.yaml
+
+# Discover components from the resolved cluster config
+ytt -f platform/clusters/schema.yaml \
+    -f $TMPDIR/cluster.yaml \
+    -f platform/build/matrix/
+
+# Extract data values for a specific component
+ytt -f platform/clusters/schema.yaml \
+    -f $TMPDIR/cluster.yaml \
+    -f platform/build/matrix/ | \
+    yq 'select(.component.id == "headlamp")' > $TMPDIR/component-values.yaml
+```
+
+### Step 2: Pre-Render — Merge component.yaml with cluster data values
+
+ytt processes the component.yaml template against the cluster config, applies the prerender overlay (which handles chart mirror URL injection and cluster-level helm value deep merging), and applies any component-specific pre-render overlays.
 
 ```bash
 ytt \
   -f platform/clusters/schema.yaml \
-  -f $CLUSTER/cluster.yaml \
+  -f $TMPDIR/cluster.yaml \
   -f $ARTIFACT/component.yaml \
-  -f platform/overlays/ \
+  -f platform/build/prerender/ \
+  --data-values-file $TMPDIR/component-values.yaml \
   > $TMPDIR/component-merged.yaml
 ```
 
-This resolves all `data.values.*` references in `component.yaml`. For example, `data.values.monitoring.enabled` is evaluated against the cluster's actual configuration. Platform overlays (from `platform/overlays/`) are applied during this step — for example, the chart-repo overlay injects `resolvedChartRef` based on the cluster's `helm_repositories` config.
+The `platform/build/prerender/` directory contains the helm-values-merge overlay which:
+- Injects `resolvedChartRef` based on the cluster's `helm_repositories` mirror config
+- Deep-merges any `helm.values` overrides from the component entry in cluster.yaml
 
-After ytt resolves the template, the CLI deep-merges any per-instance overrides from the component's `helm:` key in `cluster.yaml` into `component-merged.yaml`. This allows cluster configs to override any helm value without modifying the component template:
+**Output** (`component-merged.yaml`) — plain YAML with all ytt expressions resolved and overrides merged.
 
-```yaml
-# In cluster.yaml
-components:
-  - name: kong-ingress
-    id: kong-dev
-    helm:
-      values:
-        gateway:
-          replicaCount: 1
-          resources:
-            requests:
-              cpu: "500m"
-```
-
-The merge is recursive — only the keys you specify are overridden, everything else keeps the component.yaml defaults.
-
-**Output** (`component-merged.yaml`) — a plain YAML with all ytt expressions resolved:
-```yaml
-helm:
-  sourceRepo: https://projectcapsule.github.io/charts
-  chart: capsule
-  version: "0.12.4"
-  resolvedChartRef: oci://nexus.example.com/fedcore/helm-charts  # set when use_mirror=true, empty otherwise
-  release:
-    name: capsule
-    namespace: capsule-system
-  values:
-    manager:
-      resources:
-        limits:
-          cpu: 200m
-          memory: 256Mi
-        requests:
-          cpu: 100m
-          memory: 128Mi
-    options:
-      forceTenantPrefix: true
-    # monitoring.enabled=false in this cluster, so serviceMonitor block is omitted
-```
-
-### Step 2: Render — Run helm template
+### Step 3: Render — Run helm template
 
 Extract the chart info from the merged component and run `helm template`:
 
 ```bash
-# Determine chart source: resolvedChartRef if mirrored, sourceRepo if not
 CHART_REF=$(yq '.helm.resolvedChartRef // .helm.sourceRepo' $TMPDIR/component-merged.yaml)
 CHART=$(yq '.helm.chart' $TMPDIR/component-merged.yaml)
 VERSION=$(yq '.helm.version' $TMPDIR/component-merged.yaml)
 
-# Pull the chart (cached after first download)
 helm pull $CHART_REF/$CHART --version $VERSION --destination .cache/helm-charts
 
-# Extract the values section from the merged component into a values file
-# (in practice the CLI does this with serde, but you can use yq)
 yq '.helm.values' $TMPDIR/component-merged.yaml > $TMPDIR/values.yaml
 
-# Render the chart (namespace is set by Flux targetNamespace, not helm template)
-helm template capsule .cache/helm-charts/capsule-0.12.4.tgz \
+helm template headlamp .cache/helm-charts/headlamp-${VERSION}.tgz \
+  --namespace headlamp \
   --values $TMPDIR/values.yaml \
   > $TMPDIR/helm-rendered.yaml
 ```
 
-**Output** (`helm-rendered.yaml`) — standard Kubernetes manifests (ServiceAccount, Deployment, Webhooks, CRDs, etc.)
+### Step 4: Post-Render — Base manifests + overlays + kbld
 
-> **Note:** `--namespace` is no longer passed to `helm template`. Namespace assignment is handled by Flux via `targetNamespace` on the component's Kustomization resource in the bootstrap component-sources manifest.
-
-### Step 3: Merge base manifests
-
-If the component has a `base/` directory (capsule has `base/namespace.yaml`), ytt merges them with the helm output. Component entry fields from cluster.yaml are passed as data values so base templates can reference them (e.g., `data.values.component.namespace`):
-
-```bash
-# Generate component data values file from the cluster.yaml component entry
-cat > $TMPDIR/component-values.yaml <<EOF
-component:
-  name: capsule
-  id: capsule
-  namespace: capsule-system
-  helm: {}
-EOF
-
-ytt \
-  -f platform/clusters/schema.yaml \
-  -f $CLUSTER/cluster.yaml \
-  -f $TMPDIR/helm-rendered.yaml \
-  -f $ARTIFACT/base/ \
-  --data-values-file $TMPDIR/component-values.yaml \
-  > $TMPDIR/manifests.yaml
-```
-
-This combines the helm-rendered resources with the base templates into a single stream. Base manifests can use `data.values.component.*` to access component-specific fields — for example, `data.values.component.namespace` for dynamic namespace names, or `data.values.component.values` for custom per-instance values defined in cluster.yaml.
-
-> **Note:** Steps 3 and 4 are separate ytt invocations in the CLI, but could be combined into a single call by passing both `base/` and the cluster overlays together. They're shown separately here to match the current implementation.
-
-### Step 4: Post-Render — Apply overlays to final manifests
-
-Post-render overlays modify the rendered Kubernetes manifests. These come from component-level overlays (cloud/environment) plus cluster-level overlays:
+A single ytt call combines the helm output with base manifests, post-render overlays, and cluster overlays. Then kbld resolves image tags to digests.
 
 ```bash
 ytt \
   --ignore-unknown-comments \
   -f platform/clusters/schema.yaml \
-  -f $CLUSTER/cluster.yaml \
-  -f $TMPDIR/manifests.yaml \
+  -f $TMPDIR/cluster.yaml \
+  -f $TMPDIR/helm-rendered.yaml \
+  --data-values-file $TMPDIR/component-values.yaml \
+  -f $ARTIFACT/base/ \
   -f $CLUSTER/overlays/ \
-  > dist/capsule-aws-example-usgw1-dev-app.yaml
+  | kbld -f - \
+  > dist/headlamp-eks-private-test.yaml
 ```
-
-In this case, the cluster overlay `namespace-metadata.yaml` adds `app.kubernetes.io/managed-by: platform` to all `Namespace` resources in the output.
 
 ### Full Pipeline (one-liner)
 
 ```bash
-ARTIFACT=platform/components/capsule
-CLUSTER=platform/clusters/aws-example-usgw1-dev-app
+ARTIFACT=platform/components/headlamp
+CLUSTER=platform/clusters/aws-csb-usgw1-dev-app
 T=$(mktemp -d)
 
-# 1. Pre-render: resolve data values + platform overlays
-ytt -f platform/clusters/schema.yaml -f $CLUSTER/cluster.yaml -f $ARTIFACT/component.yaml -f platform/overlays/ > $T/component-merged.yaml
+# 0. envsubst + matrix
+envsubst < $CLUSTER/cluster.yaml > $T/cluster.yaml
+ytt -f platform/clusters/schema.yaml -f $T/cluster.yaml -f platform/build/matrix/ | \
+    yq 'select(.component.id == "headlamp")' > $T/component-values.yaml
 
-# 2. Render: helm template (resolvedChartRef if mirrored, sourceRepo if not)
-CHART_REF=$(yq '.helm.resolvedChartRef // .helm.sourceRepo' $T/component-merged.yaml)
-CHART=$(yq '.helm.chart' $T/component-merged.yaml)
-VERSION=$(yq '.helm.version' $T/component-merged.yaml)
-yq '.helm.values' $T/component-merged.yaml > $T/values.yaml
+# 1. Pre-render
+ytt -f platform/clusters/schema.yaml -f $T/cluster.yaml -f $ARTIFACT/component.yaml \
+    -f platform/build/prerender/ --data-values-file $T/component-values.yaml > $T/merged.yaml
+
+# 2. Helm template
+yq '.helm.values' $T/merged.yaml > $T/values.yaml
+CHART_REF=$(yq '.helm.resolvedChartRef // .helm.sourceRepo' $T/merged.yaml)
+CHART=$(yq '.helm.chart' $T/merged.yaml)
+VERSION=$(yq '.helm.version' $T/merged.yaml)
 helm pull $CHART_REF/$CHART --version $VERSION --destination $T
-helm template capsule $T/capsule-0.12.4.tgz --values $T/values.yaml > $T/helm-rendered.yaml
+helm template headlamp $T/headlamp-${VERSION}.tgz --namespace headlamp --values $T/values.yaml > $T/rendered.yaml
 
-# 3. Merge base manifests (with component data values for dynamic namespace etc.)
-cat > $T/component-values.yaml <<EOF
-component:
-  name: capsule
-  id: capsule
-  namespace: capsule-system
-  helm: {}
-EOF
-ytt -f platform/clusters/schema.yaml -f $CLUSTER/cluster.yaml -f $T/helm-rendered.yaml -f $ARTIFACT/base/ --data-values-file $T/component-values.yaml > $T/manifests.yaml
-
-# 4. Post-render: apply cluster overlays
-ytt --ignore-unknown-comments -f platform/clusters/schema.yaml -f $CLUSTER/cluster.yaml -f $T/manifests.yaml -f $CLUSTER/overlays/ > dist/capsule-aws-example-usgw1-dev-app.yaml
+# 3. Post-render + base + kbld
+ytt --ignore-unknown-comments -f platform/clusters/schema.yaml -f $T/cluster.yaml \
+    -f $T/rendered.yaml --data-values-file $T/component-values.yaml \
+    -f $ARTIFACT/base/ -f $CLUSTER/overlays/ | kbld -f - > dist/headlamp-eks-private-test.yaml
 ```
 
 ### Equivalent CLI Command
 
-The Rust CLI does all of the above (plus image digest resolution via kbld) in a single command:
+The Rust CLI does all of the above in a single command:
 
 ```bash
-fedcore build --artifact platform/components/capsule --cluster platform/clusters/aws-example-usgw1-dev-app
+fedcore build --artifact platform/components/headlamp --cluster platform/clusters/aws-csb-usgw1-dev-app
 ```
 
 ---
@@ -319,14 +259,13 @@ fedcore build --artifact platform/components/capsule --cluster platform/clusters
 **fedcore build** supports two modes:
 
 1. **Build All Mode** (default or `--all`)
-   - Discovers all component × cluster combinations via `fedcore matrix`
-   - Builds all artifacts in sequence
+   - Discovers all component x cluster combinations via `fedcore matrix`
+   - Builds all artifacts in parallel
    - Reports success/failure summary
 
-2. **Single Artifact Mode** (`--artifact <artifact> --cluster <cluster>`)
-   - Builds one specific component for one specific cluster
-   - Outputs to stdout by default (can redirect to file)
-   - Useful for development and testing
+2. **Single Cluster Mode** (`--cluster <cluster>`)
+   - Only discovers components for the specified cluster (no wasted ytt calls)
+   - Can be combined with `--artifact` or `--id` to build a single component
 
 ### Overlay Processing Phases
 
@@ -334,43 +273,42 @@ fedcore build --artifact platform/components/capsule --cluster platform/clusters
 - **When**: Before `helm template` execution
 - **Applies to**: `component.yaml` file
 - **Effect**: Modifies `helm.values` section
-- **Marker**: `#! overlay-phase: pre-render` comment in overlay file
+- **Location**: `overlays/{id}/pre-render/` subdirectory
 - **Sources**:
-  - `overlays/{aws|azure|onprem}/overlay.yaml`
-  - `overlays/{dev|prod}/overlay.yaml`
+  - `platform/build/prerender/` (chart mirror + helm value merge)
+  - `overlays/{aws|azure|onprem}/pre-render/*.yaml`
+  - `overlays/{dev|prod}/pre-render/*.yaml`
 
 #### RENDER Phase (Helm components only)
 - **When**: After pre-render overlays applied
 - **Tool**: `helm template` command
 - **Inputs**:
   - Chart from OCI registry or HTTP repo
-  - Merged values from component.yaml
-  - Release name from component.yaml
+  - Merged values from component.yaml + cluster overrides
+  - Release name and namespace from component config
 - **Output**: Rendered Kubernetes manifests
-- **Namespace**: Not set during helm template; handled by Flux `targetNamespace` at deploy time
-- **Component overrides**: Before rendering, the CLI deep-merges any `helm:` overrides from the component's entry in `cluster.yaml` into the merged component config. This allows per-instance customization (resources, replicas, etc.) without modifying the component template.
-- **Base manifests**: Combined with `base/*.yaml` files via ytt, with component entry fields available as `data.values.component.*` (name, id, namespace, helm)
 
 #### POST-RENDER Phase (All components)
 - **When**: After Helm rendering (or directly for plain components)
 - **Applies to**: Final Kubernetes manifests
 - **Tool**: `ytt` with overlay syntax
-- **Marker**: `#! overlay-phase: post-render` or no phase metadata (default)
-- **Sources** (applied in order):
-  1. Cloud overlays: `overlays/{aws|azure|onprem}/*.yaml`
-  2. Environment overlays: `overlays/{dev|prod}/*.yaml`
-  3. Cluster overlays: `platform/clusters/{cluster}/overlays/*.yaml`
+- **Location**: `overlays/{id}/post-render/` subdirectory
+- **Sources** (applied in single ytt call):
+  1. Base manifests: `{component}/base/*.yaml`
+  2. Cloud overlays: `overlays/{aws|azure|onprem}/post-render/*.yaml`
+  3. Environment overlays: `overlays/{dev|prod}/post-render/*.yaml`
+  4. Cluster overlays: `platform/clusters/{cluster}/overlays/*.yaml`
 - **Use cases**: Add labels, modify resources, add node selectors/tolerations
 
 ### Component Types
 
-1. **Helm Components** (`type: helm` in `component.yaml`)
+1. **Helm Components** (`helm:` section in `component.yaml`)
    - Chart rendered via `helm template`
    - Pre-render overlays modify values before rendering
    - Post-render overlays modify final manifests
    - Example: capsule, istio, kyverno
 
-2. **Plain Components** (`type: plain` or no `component.yaml`)
+2. **Plain Components** (no `component.yaml` or no `helm:` section)
    - Static manifests in `base/*.yaml`
    - Only post-render overlays applied
    - Example: simple operators, CRDs
@@ -380,7 +318,6 @@ fedcore build --artifact platform/components/capsule --cluster platform/clusters
 #### Local Builds (default)
 - **Location**: `dist/{component}-{cluster}.yaml`
 - **Format**: Single YAML file with all manifests
-- **Validation**: Checked with `ytt -f <file>`
 
 #### OCI Registry Builds (`--push` mode)
 - **Layout**: `oci-layout/{component}-{cluster}/platform.yaml`
@@ -392,30 +329,35 @@ fedcore build --artifact platform/components/capsule --cluster platform/clusters
 
 ```
 platform/
+├── build/
+│   ├── matrix/
+│   │   └── matrix-template.yaml    # Component resolution template
+│   └── prerender/
+│       └── helm-values-merge-overlay.yaml  # Chart ref + value merge
 ├── components/{component}/
-│   ├── component.yaml          # Component metadata (optional)
-│   ├── base/                   # Base manifests
+│   ├── component.yaml              # Component metadata (optional)
+│   ├── base/                       # Base manifests
 │   │   └── *.yaml
 │   └── overlays/
 │       ├── aws/
-│       │   └── overlay.yaml   # PRE or POST-render
-│       ├── azure/
-│       │   └── overlay.yaml
-│       ├── onprem/
-│       │   └── overlay.yaml
-│       ├── dev/
-│       │   └── overlay.yaml
-│       └── prod/
-│           └── overlay.yaml
+│       │   ├── pre-render/         # Applied before helm template
+│       │   │   └── *.yaml
+│       │   └── post-render/        # Applied after helm template
+│       │       └── *.yaml
+│       ├── prod/
+│       │   ├── pre-render/
+│       │   └── post-render/
+│       └── dev/
+│           └── post-render/
 └── clusters/{cluster}/
-    ├── cluster.yaml            # Cluster configuration
-    └── overlays/               # Cluster-specific overlays
-        └── *.yaml              # Always POST-render
+    ├── cluster.yaml                # Cluster configuration
+    └── overlays/                   # Cluster-specific overlays (post-render)
+        └── *.yaml
 
 dist/
-└── {component}-{cluster}.yaml  # Built artifacts
+└── {component}-{cluster}.yaml     # Built artifacts
 
 oci-layout/
 └── {component}-{cluster}/
-    └── platform.yaml           # OCI artifact layout
+    └── platform.yaml               # OCI artifact layout
 ```

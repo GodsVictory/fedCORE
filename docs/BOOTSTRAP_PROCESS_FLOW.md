@@ -72,7 +72,7 @@ flowchart TB
         end
 
         subgraph secrets["Secret Substitution"]
-            K1["Replace environment variables:<br/>${OCI_DOCKERCONFIG_JSON}<br/>${SPLUNK_HEC_HOST}<br/>${SPLUNK_HEC_TOKEN}"]
+            K1["envsubst on cluster.yaml:<br/>All ${VAR} placeholders resolved<br/>from environment before ytt processing"]
         end
     end
 
@@ -212,13 +212,13 @@ flowchart TB
 
 ### Secret Substitution
 
-Bootstrap requires several secrets from environment variables:
+Any `${VAR}` placeholder in cluster.yaml is resolved from the environment before processing. Common variables:
 
 | Variable | Required | Purpose |
 |---|---|---|
 | OCI_DOCKERCONFIG_JSON | Yes | Docker config for pulling images from registry |
-| SPLUNK_HEC_HOST | No | Splunk HTTP Event Collector endpoint |
-| SPLUNK_HEC_TOKEN | No | Splunk HEC authentication token |
+
+Additional `${VAR}` placeholders can be added to cluster.yaml — they are resolved automatically.
 
 **For `--component-sources --push`:**
 
@@ -341,10 +341,8 @@ Before running bootstrap:
    - Namespace-scoped access after admin-prep has been applied
 
 3. **Environment variables** (for --deploy):
-   - `OCI_DOCKERCONFIG_JSON`: Required
+   - `OCI_DOCKERCONFIG_JSON`: Required (or any `${VAR}` referenced in cluster.yaml)
    - `OCI_REGISTRY` or `--registry`: Required when flux.install is true
-   - `SPLUNK_HEC_HOST`: Optional
-   - `SPLUNK_HEC_TOKEN`: Optional
 
 4. **Environment variables** (for --component-sources --push):
    - `OCI_REGISTRY`: Required

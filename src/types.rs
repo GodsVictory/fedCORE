@@ -6,9 +6,9 @@ pub struct ClusterConfig {
     #[serde(default)]
     pub flux: FluxConfig,
     #[serde(default)]
-    pub overlays: Vec<String>,
-    #[serde(default)]
     pub components: Vec<ComponentEntry>,
+    #[serde(flatten)]
+    _extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -34,35 +34,8 @@ impl Default for FluxConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ComponentEntry {
     pub name: String,
-    #[serde(default)]
-    pub id: Option<String>,
-    #[serde(default)]
-    pub namespace: Option<String>,
     #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
-impl ComponentEntry {
-    pub fn id(&self) -> &str {
-        self.id.as_deref().unwrap_or(&self.name)
-    }
-
-    pub fn namespace(&self) -> &str {
-        self.namespace.as_deref().unwrap_or_else(|| self.id())
-    }
-
-    pub fn to_data_values_yaml(&self) -> String {
-        let mut component = serde_json::json!({
-            "name": self.name,
-            "id": self.id(),
-            "namespace": self.namespace(),
-        });
-        for (key, val) in &self.extra {
-            component[key] = val.clone();
-        }
-        let wrapper = serde_json::json!({ "component": component });
-        serde_saphyr::to_string(&wrapper).unwrap_or_default()
-    }
+    _extra: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_true() -> bool {
@@ -110,6 +83,8 @@ pub struct BuildMatrixEntry {
     pub component_namespace: String,
     #[serde(default)]
     pub component_data_values_yaml: String,
+    #[serde(default)]
+    pub overlays: Vec<String>,
 }
 
 
