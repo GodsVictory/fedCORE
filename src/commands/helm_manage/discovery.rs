@@ -12,6 +12,16 @@ pub struct ComponentInfo {
     pub component_path: String,
 }
 
+impl ComponentInfo {
+    pub fn chart_ref(&self) -> String {
+        if self.repo.starts_with("oci://") {
+            format!("{}/{}", self.repo, self.chart)
+        } else {
+            format!("{}/{}", get_repo_name(&self.name), self.chart)
+        }
+    }
+}
+
 pub fn discover_components() -> Result<Vec<ComponentInfo>> {
     let mut components = Vec::new();
 

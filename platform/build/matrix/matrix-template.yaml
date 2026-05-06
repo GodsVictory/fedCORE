@@ -16,7 +16,7 @@ component:
   #@ if c.depends_on:
   depends_on: #@ c.depends_on
   #@ end
-  #@ if c.helm:
-  helm: #@ c.helm
+  #@ if c.values:
+  values: #@ c.values
   #@ end
 #@ end

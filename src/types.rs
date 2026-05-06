@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClusterConfig {
     pub cluster_name: String,
+    #[serde(default = "default_true")]
+    pub bootstrap: bool,
     #[serde(default)]
     pub flux: FluxConfig,
     #[serde(default)]

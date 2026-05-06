@@ -35,15 +35,8 @@ fn ensure_chart(
         repos_init.call_once(|| ensure_helm_repos(all_components));
     }
 
-    let chart_ref = if component.repo.starts_with("oci://") {
-        format!("{}/{}", component.repo, component.chart)
-    } else {
-        let repo_name = get_repo_name(&component.name);
-        format!("{}/{}", repo_name, component.chart)
-    };
-
     let cache_path =
-        helm::resolve_cached_chart(&component.chart, &component.version, &chart_ref)?;
+        helm::resolve_cached_chart(&component.chart, &component.version, &component.chart_ref())?;
     fs::copy(&cache_path, &dest_path)?;
     Ok(())
 }
@@ -173,6 +166,7 @@ fn ensure_helm_repos(components: &[&ComponentInfo]) {
         return;
     }
 
+    let mut repo_names = Vec::new();
     for component in components {
         if !component.repo.starts_with("oci://") {
             let repo_name = get_repo_name(&component.name);
@@ -180,11 +174,17 @@ fn ensure_helm_repos(components: &[&ComponentInfo]) {
             let _ = Command::new("helm")
                 .args(["repo", "add", &repo_name, &component.repo])
                 .output();
+            repo_names.push(repo_name);
         }
     }
 
-    output::cmd("helm", &["repo", "update"]);
-    let _ = Command::new("helm").args(["repo", "update"]).output();
+    let args: Vec<&str> = std::iter::once("repo")
+        .chain(std::iter::once("update"))
+        .chain(repo_names.iter().map(|s| s.as_str()))
+        .collect();
+
+    output::cmd("helm", &args);
+    let _ = Command::new("helm").args(&args).output();
 }
 
 fn get_latest_http_version(name: &str, chart: &str) -> Result<Option<String>> {

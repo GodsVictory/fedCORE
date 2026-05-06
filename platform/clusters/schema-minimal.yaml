@@ -19,6 +19,10 @@ region: ""
 #! Environment: prod, dev, staging
 environment: ""
 
+#! Set to false to disable bootstrap for manually-deployed clusters
+#! When false, `fedcore bootstrap` will exit early without generating config
+bootstrap: true
+
 #! Ingress domain for the cluster
 ingress_domain: ""
 

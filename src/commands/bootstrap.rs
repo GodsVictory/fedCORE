@@ -41,6 +41,11 @@ pub fn execute(
 
     output::summary(&metadata.cluster_name);
 
+    if !metadata.bootstrap {
+        output::warn("Bootstrap disabled for this cluster (bootstrap: false)");
+        return Ok(());
+    }
+
     if component_sources {
         output::section("Generating component-sources");
         let sources_yaml = generate_component_sources(&metadata, &cluster_yaml)?;

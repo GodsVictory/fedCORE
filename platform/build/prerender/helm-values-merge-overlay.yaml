@@ -33,8 +33,8 @@ helm:
   resolvedChartRef: #@ mirror_ref
 
   #@ component = data.values.component
-  #@ has_helm_overrides = hasattr(component, "helm") and component.helm and hasattr(component.helm, "values") and component.helm.values
-  #@ if has_helm_overrides:
+  #@ has_overrides = hasattr(component, "values") and component.values
+  #@ if has_overrides:
   #@overlay/replace via=lambda left, right: merge(left, right)
-  values: #@ component.helm.values
+  values: #@ component.values
   #@ end
