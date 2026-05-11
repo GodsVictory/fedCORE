@@ -1,0 +1,307 @@
+#@ load("@ytt:data", "data")
+
+#! Tenant-type manifests: Capsule Tenant with multi-namespace support, quotas, RBAC.
+
+#@ if hasattr(data.values, "tenants") and data.values.tenants:
+#@   for tenant in data.values.tenants:
+#@     tenant_type = tenant.type if hasattr(tenant, "type") and tenant.type else "tenant"
+#@     if tenant_type == "tenant":
+
+#@ tenant_name = tenant.name
+#@ cicd_ns = tenant_name + "-cicd"
+#@ cost_center = tenant.cost_center if hasattr(tenant, "cost_center") and tenant.cost_center else "unknown"
+#@ billing_contact = tenant.billing_contact if hasattr(tenant, "billing_contact") and tenant.billing_contact else ""
+#@ allow_lb = tenant.allow_loadbalancer if hasattr(tenant, "allow_loadbalancer") and tenant.allow_loadbalancer != None else False
+#@ allow_egress = data.values.tenant_policies.allow_internet_egress
+#@ istio_enabled = hasattr(tenant, "istio") and hasattr(tenant.istio, "enabled") and tenant.istio.enabled
+#@ istio_strict = True
+#@ if hasattr(tenant, "istio") and hasattr(tenant.istio, "strict_mtls"):
+#@   istio_strict = tenant.istio.strict_mtls
+#@ end
+#@ default_cpu_limit = tenant.default_cpu_limit if hasattr(tenant, "default_cpu_limit") and tenant.default_cpu_limit else "500m"
+#@ default_memory_limit = tenant.default_memory_limit if hasattr(tenant, "default_memory_limit") and tenant.default_memory_limit else "512Mi"
+#@ default_cpu_request = tenant.default_cpu_request if hasattr(tenant, "default_cpu_request") and tenant.default_cpu_request else "100m"
+#@ default_memory_request = tenant.default_memory_request if hasattr(tenant, "default_memory_request") and tenant.default_memory_request else "128Mi"
+#@ ns_cpu_quota = data.values.tenant_policies.default_namespace_cpu_quota
+#@ ns_memory_quota = data.values.tenant_policies.default_namespace_memory_quota
+#@ namespace_quota = tenant.namespace_quota if hasattr(tenant, "namespace_quota") else 5
+
+---
+apiVersion: capsule.clastix.io/v1beta2
+kind: Tenant
+metadata:
+  name: #@ tenant_name
+  labels:
+    platform.fedcore.io/tenant: #@ tenant_name
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+    platform.fedcore.io/cost-center: #@ cost_center
+  annotations:
+    platform.fedcore.io/billing-contact: #@ billing_contact
+spec:
+  owners: #@ tenant.owners
+  additionalRoleBindings:
+    - clusterRoleName: #@ tenant_name + "-namespace-deployer"
+      subjects:
+        - kind: ServiceAccount
+          name: #@ tenant_name + "-deployer"
+          namespace: #@ cicd_ns
+  namespaceOptions:
+    quota: #@ namespace_quota
+    additionalMetadata:
+      labels:
+        istio-injection: #@ "enabled" if istio_enabled else "disabled"
+  resourceQuotas:
+    scope: Tenant
+    items:
+      - hard:
+          limits.cpu: #@ tenant.resources.cpu
+          limits.memory: #@ tenant.resources.memory
+          persistentvolumeclaims: #@ tenant.resources.max_pvcs
+          requests.storage: #@ tenant.resources.storage
+  limitRanges:
+    items:
+      - limits:
+          - type: Container
+            default:
+              cpu: #@ default_cpu_limit
+              memory: #@ default_memory_limit
+            defaultRequest:
+              cpu: #@ default_cpu_request
+              memory: #@ default_memory_request
+            max:
+              cpu: "4"
+              memory: "8Gi"
+            min:
+              cpu: "10m"
+              memory: "16Mi"
+          - type: PersistentVolumeClaim
+            max:
+              storage: "100Gi"
+            min:
+              storage: "1Gi"
+  networkPolicies:
+    items:
+      - policyTypes:
+          - Ingress
+        podSelector: {}
+        ingress: []
+      - policyTypes:
+          - Ingress
+        podSelector: {}
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    capsule.clastix.io/tenant: #@ tenant_name
+      - policyTypes:
+          - Egress
+        podSelector: {}
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kube-system
+                podSelector:
+                  matchLabels:
+                    k8s-app: kube-dns
+            ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+      #@ if hasattr(data.values, "appdynamics") and hasattr(data.values.appdynamics, "ip_ranges") and data.values.appdynamics.ip_ranges:
+      - policyTypes:
+          - Egress
+        podSelector: {}
+        egress:
+          #@ for ip_range in data.values.appdynamics.ip_ranges:
+          - to:
+              - ipBlock:
+                  cidr: #@ ip_range
+            ports:
+              - protocol: TCP
+                port: 443
+          #@ end
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kube-system
+                podSelector:
+                  matchLabels:
+                    k8s-app: kube-dns
+            ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+      #@ end
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: #@ cicd_ns
+  labels:
+    platform.fedcore.io/tenant: #@ tenant_name
+    capsule.clastix.io/tenant: #@ tenant_name
+    platform.fedcore.io/cost-center: #@ cost_center
+    istio-injection: #@ "enabled" if istio_enabled else "disabled"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: #@ tenant_name + "-deployer"
+  namespace: #@ cicd_ns
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: #@ tenant_name + "-deployer-cluster"
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "persistentvolumes", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: #@ tenant_name + "-deployer"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: #@ tenant_name + "-deployer-cluster"
+subjects:
+  - kind: ServiceAccount
+    name: #@ tenant_name + "-deployer"
+    namespace: #@ cicd_ns
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: #@ tenant_name + "-namespace-deployer"
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "endpoints", "persistentvolumeclaims", "configmaps", "pods"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log", "pods/status"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: ["security.istio.io"]
+    resources: ["authorizationpolicies", "peerauthentications"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.istio.io"]
+    resources: ["destinationrules", "virtualservices", "serviceentries"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+#@ if istio_enabled:
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: #@ tenant_name + "-mtls"
+  namespace: #@ cicd_ns
+  labels:
+    platform.fedcore.io/tenant: #@ tenant_name
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+spec:
+  selector: {}
+  mtls:
+    mode: #@ "STRICT" if istio_strict else "PERMISSIVE"
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: #@ tenant_name + "-allow-intra-tenant"
+  namespace: #@ cicd_ns
+  labels:
+    platform.fedcore.io/tenant: #@ tenant_name
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+spec:
+  selector:
+    matchLabels:
+      istio.io/tenant: #@ tenant_name
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        namespaces:
+          - #@ tenant_name + "-*"
+    - source:
+        namespaces: ["istio-system"]
+#@ end
+
+#@ if allow_egress:
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: #@ tenant_name + "-generate-internet-egress"
+  labels:
+    platform.fedcore.io/tenant: #@ tenant_name
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+spec:
+  generateExistingOnPolicyUpdate: true
+  rules:
+    - name: generate-internet-egress-policy
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchLabels:
+                  capsule.clastix.io/tenant: #@ tenant_name
+      generate:
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: allow-internet-egress
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          spec:
+            policyTypes:
+              - Egress
+            podSelector: {}
+            egress:
+              - to:
+                  - ipBlock:
+                      cidr: 0.0.0.0/0
+                      #@ if hasattr(data.values, "network") and hasattr(data.values.network, "private_cidrs"):
+                      except: #@ data.values.network.private_cidrs
+                      #@ end
+#@ end
+
+#@     end
+#@   end
+#@ end

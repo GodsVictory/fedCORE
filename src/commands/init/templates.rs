@@ -15,12 +15,9 @@ pub const CLUSTER_SCHEMA: &str = include_str!("../../../platform/clusters/schema
 // --- Tenant Instances Component ---
 
 pub const TENANT_INSTANCES_README: &str = include_str!("../../../platform/components/tenant-instances/README.md");
-pub const TENANT_INSTANCES_YAML: &str = include_str!("../../../platform/components/tenant-instances/base/tenant-instances.yaml");
+pub const TENANT_INSTANCES_NAMESPACE_YAML: &str = include_str!("../../../platform/components/tenant-instances/base/namespace.yaml");
+pub const TENANT_INSTANCES_TENANT_YAML: &str = include_str!("../../../platform/components/tenant-instances/base/tenant.yaml");
 
-// --- Namespace RGD ---
-
-pub const NAMESPACE_RGD_README: &str = include_str!("../../../platform/rgds/namespace/README.md");
-pub const NAMESPACE_RGD_YAML: &str = include_str!("../../../platform/rgds/namespace/base/namespace-rgd.yaml");
 
 // --- Capsule Component ---
 

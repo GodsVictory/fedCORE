@@ -36,8 +36,6 @@ pub fn init_project() -> Result<()> {
         project_path.join("platform/bootstrap/component-sources"),
         project_path.join("platform/bootstrap/component-sources/base"),
         project_path.join("platform/rgds"),
-        project_path.join("platform/rgds/namespace"),
-        project_path.join("platform/rgds/namespace/base"),
         project_path.join("docs"),
     ];
 
@@ -224,11 +222,9 @@ fn create_bootstrap_files(project_path: &Path) -> Result<()> {
 fn create_default_components(project_path: &Path) -> Result<()> {
     let tenant_instances_dir = project_path.join("platform/components/tenant-instances");
     fs::write(tenant_instances_dir.join("README.md"), TENANT_INSTANCES_README)?;
-    fs::write(tenant_instances_dir.join("base/tenant-instances.yaml"), TENANT_INSTANCES_YAML)?;
+    fs::write(tenant_instances_dir.join("base/namespace.yaml"), TENANT_INSTANCES_NAMESPACE_YAML)?;
+    fs::write(tenant_instances_dir.join("base/tenant.yaml"), TENANT_INSTANCES_TENANT_YAML)?;
 
-    let namespace_rgd_dir = project_path.join("platform/rgds/namespace");
-    fs::write(namespace_rgd_dir.join("README.md"), NAMESPACE_RGD_README)?;
-    fs::write(namespace_rgd_dir.join("base/namespace-rgd.yaml"), NAMESPACE_RGD_YAML)?;
 
     let capsule_dir = project_path.join("platform/components/capsule");
     fs::write(capsule_dir.join("README.md"), CAPSULE_README)?;

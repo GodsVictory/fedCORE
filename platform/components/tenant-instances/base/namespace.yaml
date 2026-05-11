@@ -1,0 +1,106 @@
+#@ load("@ytt:data", "data")
+
+#! Namespace-type tenant manifests: simple namespace with optional SA and RBAC.
+
+#@ if hasattr(data.values, "tenants") and data.values.tenants:
+#@   for tenant in data.values.tenants:
+#@     tenant_type = tenant.type if hasattr(tenant, "type") and tenant.type else "tenant"
+#@     if tenant_type == "namespace":
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: #@ tenant.name
+  labels:
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+    platform.fedcore.io/managed-by: flux
+    #@ if hasattr(data.values, "environment") and data.values.environment:
+    platform.fedcore.io/environment: #@ data.values.environment
+    #@ end
+    #@ if hasattr(tenant, "team") and tenant.team:
+    platform.fedcore.io/team: #@ tenant.team
+    #@ end
+    #@ if hasattr(tenant, "cost_center") and tenant.cost_center:
+    platform.fedcore.io/cost-center: #@ tenant.cost_center
+    #@ end
+  annotations:
+    #@ if hasattr(tenant, "description") and tenant.description:
+    platform.fedcore.io/description: #@ tenant.description
+    #@ end
+    #@ if hasattr(tenant, "owners") and tenant.owners:
+    platform.fedcore.io/owner: #@ tenant.owners[0].name
+    #@ end
+
+#@ create_sa = True
+#@ if hasattr(tenant, "create_service_account") and tenant.create_service_account != None:
+#@   create_sa = tenant.create_service_account
+#@ end
+
+#@ if create_sa:
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin
+  namespace: #@ tenant.name
+  labels:
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+    platform.fedcore.io/managed-by: flux
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: admin-admin
+  namespace: #@ tenant.name
+  labels:
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+    platform.fedcore.io/managed-by: flux
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: admin
+subjects:
+  - kind: ServiceAccount
+    name: admin
+    namespace: #@ tenant.name
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: admin-token
+  namespace: #@ tenant.name
+  annotations:
+    kubernetes.io/service-account.name: admin
+  labels:
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+    platform.fedcore.io/managed-by: flux
+type: kubernetes.io/service-account-token
+#@ end
+
+#@ if hasattr(tenant, "role_bindings") and tenant.role_bindings:
+#@   for binding in tenant.role_bindings:
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: #@ binding.name + "-" + binding.role
+  namespace: #@ tenant.name
+  labels:
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+    platform.fedcore.io/managed-by: flux
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: #@ binding.role
+subjects:
+  - kind: #@ binding.kind
+    name: #@ binding.name
+    #@ if binding.kind == "ServiceAccount" and hasattr(binding, "namespace") and binding.namespace:
+    namespace: #@ binding.namespace
+    #@ end
+#@   end
+#@ end
+
+#@     end
+#@   end
+#@ end

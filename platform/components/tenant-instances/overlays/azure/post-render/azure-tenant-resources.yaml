@@ -1,0 +1,62 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:overlay", "overlay")
+
+#! Azure-specific resources for tenant-instances.
+#! Adds Managed Identity and Federated Credential for Workload Identity.
+#! Note: The azure.workload.identity/client-id annotation on the ServiceAccount
+#! must be populated after ASO creates the UserAssignedIdentity (the client ID
+#! is only known at runtime). Use ASO's configMapRef or a post-deploy step.
+
+#@ if hasattr(data.values, "tenants") and data.values.tenants and hasattr(data.values, "azure") and data.values.azure:
+#@   for tenant in data.values.tenants:
+#@     tenant_type = tenant.type if hasattr(tenant, "type") and tenant.type else "tenant"
+#@     if tenant_type == "tenant":
+#@       tenant_name = tenant.name
+#@       cicd_ns = tenant_name + "-cicd"
+
+---
+apiVersion: managedidentity.azure.com/v1api20230131
+kind: UserAssignedIdentity
+metadata:
+  name: #@ tenant_name + "-deployer"
+  namespace: #@ cicd_ns
+spec:
+  location: #@ data.values.azure.region
+  owner:
+    name: #@ data.values.azure.resource_group
+  operatorSpec:
+    configMaps:
+      clientId:
+        name: #@ tenant_name + "-deployer-identity"
+        key: clientId
+
+---
+apiVersion: managedidentity.azure.com/v1api20230131
+kind: FederatedIdentityCredential
+metadata:
+  name: #@ tenant_name + "-deployer"
+  namespace: #@ cicd_ns
+spec:
+  owner:
+    name: #@ tenant_name + "-deployer"
+  audiences:
+    - api://AzureADTokenExchange
+  issuer: #@ data.values.azure.oidc_issuer
+  subject: #@ "system:serviceaccount:" + cicd_ns + ":" + tenant_name + "-deployer"
+
+#! Patch ServiceAccount with Workload Identity label and tenant-id
+#@overlay/match by=overlay.subset({"kind": "ServiceAccount", "metadata": {"name": tenant_name + "-deployer", "namespace": cicd_ns}})
+---
+metadata:
+  #@overlay/match missing_ok=True
+  labels:
+    #@overlay/match missing_ok=True
+    azure.workload.identity/use: "true"
+  #@overlay/match missing_ok=True
+  annotations:
+    #@overlay/match missing_ok=True
+    azure.workload.identity/tenant-id: #@ data.values.azure.tenant_id
+
+#@     end
+#@   end
+#@ end

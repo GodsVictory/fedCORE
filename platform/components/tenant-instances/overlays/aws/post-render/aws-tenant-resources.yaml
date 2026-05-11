@@ -1,0 +1,237 @@
+#@ load("@ytt:data", "data")
+#@ load("@ytt:sha256", "sha256")
+
+#! AWS-specific resources for tenant-instances.
+#! Adds IAM roles, Pod Identity, EKS AccessEntries for tenant-type tenants,
+#! and EKS AccessEntries for namespace-type tenants with createAccessEntry bindings.
+
+#@ def generate_role_suffix(tenant_name):
+#@   combined = tenant_name + data.values.cluster_name + str(data.values.aws.account_id)
+#@   return sha256.sum(combined)[0:8]
+#@ end
+
+#@ def ack_eks_controller_enabled():
+#@   for component in data.values.components:
+#@     if component.name == "ack-eks-controller":
+#@       return True
+#@     end
+#@   end
+#@   return False
+#@ end
+
+#@ if hasattr(data.values, "tenants") and data.values.tenants and hasattr(data.values, "aws") and data.values.aws:
+#@   for tenant in data.values.tenants:
+#@     tenant_type = tenant.type if hasattr(tenant, "type") and tenant.type else "tenant"
+#@     tenant_name = tenant.name
+#@     if tenant_type == "tenant" and hasattr(tenant, "aws_account_id") and tenant.aws_account_id:
+#@       cicd_ns = tenant_name + "-cicd"
+#@       role_suffix = generate_role_suffix(tenant_name)
+
+#! ═══════════════════════════════════════════════════════════════════════════
+#! IAMRoleSelectors for Cross-Account Routing
+#! ═══════════════════════════════════════════════════════════════════════════
+---
+apiVersion: services.k8s.aws/v1alpha1
+kind: IAMRoleSelector
+metadata:
+  name: #@ tenant_name + "-bootstrap"
+  labels:
+    platform.fedcore.io/tenant: #@ tenant_name
+    platform.fedcore.io/managed-by: flux
+spec:
+  arn: #@ "arn:aws:iam::" + tenant.aws_account_id + ":role/FedCoreBootstrapRole"
+  resourceLabelSelector:
+    matchLabels:
+      platform.fedcore.io/ack-target: #@ tenant_name
+      platform.fedcore.io/resource-type: bootstrap
+---
+apiVersion: services.k8s.aws/v1alpha1
+kind: IAMRoleSelector
+metadata:
+  name: #@ tenant_name
+  labels:
+    platform.fedcore.io/tenant: #@ tenant_name
+    platform.fedcore.io/managed-by: flux
+spec:
+  arn: #@ "arn:aws:iam::" + tenant.aws_account_id + ":role/fedcore-ack-provisioner"
+  resourceLabelSelector:
+    matchLabels:
+      platform.fedcore.io/ack-target: #@ tenant_name
+      platform.fedcore.io/resource-type: provisioned
+
+#! ═══════════════════════════════════════════════════════════════════════════
+#! Permission Boundary
+#! ═══════════════════════════════════════════════════════════════════════════
+---
+apiVersion: iam.services.k8s.aws/v1alpha1
+kind: Policy
+metadata:
+  name: #@ tenant_name + "-boundary"
+  namespace: #@ cicd_ns
+  labels:
+    platform.fedcore.io/tenant: #@ tenant_name
+    platform.fedcore.io/resource-type: bootstrap
+    platform.fedcore.io/ack-target: #@ tenant_name
+spec:
+  name: TenantMaxPermissions
+  description: Permission boundary for all tenant-created IAM roles
+  policyDocument: #@ '{"Version":"2012-10-17","Statement":[{"Sid":"AllowAWSServiceAccess","Effect":"Allow","Action":["s3:*","rds:*","dynamodb:*","elasticache:*","sqs:*","sns:*","kinesis:*","lambda:*","secretsmanager:GetSecretValue","secretsmanager:DescribeSecret","kms:Decrypt","kms:DescribeKey","ec2:Describe*","ec2:CreateTags","cloudwatch:PutMetricData","logs:*"],"Resource":"*"},{"Sid":"AllowIAMRoleCreationWithBoundary","Effect":"Allow","Action":["iam:CreateRole","iam:PutRolePolicy","iam:AttachRolePolicy","iam:TagRole","iam:GetRole","iam:GetRolePolicy","iam:ListRolePolicies","iam:ListAttachedRolePolicies"],"Resource":"arn:aws:iam::*:role/*","Condition":{"StringEquals":{"iam:PermissionsBoundary":"arn:aws:iam::' + tenant.aws_account_id + ':policy/TenantMaxPermissions"}}},{"Sid":"DenyIAMUserOperations","Effect":"Deny","Action":["iam:CreateUser","iam:CreateAccessKey","iam:DeleteUserPolicy","iam:PutUserPolicy","iam:AttachUserPolicy","iam:UpdateUser"],"Resource":"*"},{"Sid":"DenyIAMPolicyModification","Effect":"Deny","Action":["iam:CreatePolicyVersion","iam:DeletePolicy","iam:DeletePolicyVersion","iam:DeleteRole","iam:DeleteRolePolicy","iam:DetachRolePolicy","iam:UpdateAssumeRolePolicy"],"Resource":"*"},{"Sid":"DenyOrganizationsAccess","Effect":"Deny","Action":["organizations:*","account:*"],"Resource":"*"},{"Sid":"DenySecurityServiceModification","Effect":"Deny","Action":["cloudtrail:DeleteTrail","cloudtrail:StopLogging","config:DeleteConfigRule","config:StopConfigurationRecorder","guardduty:DeleteDetector","securityhub:DeleteMembers"],"Resource":"*"}]}'
+
+#! ═══════════════════════════════════════════════════════════════════════════
+#! ACK Provisioner Role
+#! ═══════════════════════════════════════════════════════════════════════════
+---
+apiVersion: iam.services.k8s.aws/v1alpha1
+kind: Role
+metadata:
+  name: #@ tenant_name + "-ack-prov"
+  namespace: #@ cicd_ns
+  labels:
+    platform.fedcore.io/tenant: #@ tenant_name
+    platform.fedcore.io/resource-type: bootstrap
+    platform.fedcore.io/auth-method: pod-identity
+    platform.fedcore.io/ack-target: #@ tenant_name
+spec:
+  name: fedcore-ack-provisioner
+  description: Allows ACK controllers to provision resources via Pod Identity
+  maxSessionDuration: 3600
+  assumeRolePolicyDocument: #@ '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::' + str(data.values.aws.account_id) + ':role/' + data.values.cluster_name + '-ack-iam-controller"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"fedcore-ack-' + tenant_name + '"}}}]}'
+  policies:
+    - policyName: AllowResourceProvisioning
+      policyDocument: |
+        {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Action": ["s3:*", "rds:*", "dynamodb:*", "elasticache:*", "sqs:*", "sns:*", "kinesis:*", "lambda:*", "ec2:*", "iam:CreateRole", "iam:GetRole", "iam:UpdateRole", "iam:TagRole", "iam:PutRolePolicy", "iam:GetRolePolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:ListAttachedRolePolicies", "iam:ListRolePolicies", "iam:CreatePolicy", "iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions"],
+            "Resource": "*"
+          }]
+        }
+
+#! ═══════════════════════════════════════════════════════════════════════════
+#! Two-Tier Pod Identity Roles
+#! ═══════════════════════════════════════════════════════════════════════════
+---
+apiVersion: iam.services.k8s.aws/v1alpha1
+kind: Role
+metadata:
+  name: #@ tenant_name + "-deployer-cluster"
+  namespace: #@ cicd_ns
+  labels:
+    platform.fedcore.io/tenant: #@ tenant_name
+    platform.fedcore.io/resource-type: pod-identity
+    platform.fedcore.io/role-tier: cluster
+  annotations:
+    platform.fedcore.io/cluster-account: "true"
+    platform.fedcore.io/description: #@ "Cluster account role for " + tenant_name + " deployer - used by Pod Identity"
+spec:
+  name: #@ data.values.cluster_name + "-" + tenant_name + "-deployer-" + role_suffix
+  description: #@ "Cluster role for " + tenant_name + " deployer (Pod Identity)"
+  maxSessionDuration: 3600
+  assumeRolePolicyDocument: #@ '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"],"Condition":{"StringEquals":{"aws:SourceAccount":"' + str(data.values.aws.account_id) + '"},"ArnEquals":{"aws:SourceArn":"arn:aws:eks:' + data.values.region + ':' + str(data.values.aws.account_id) + ':cluster/' + data.values.cluster_name + '"}}}]}'
+  policies:
+    - policyName: AssumeTenantRole
+      policyDocument: #@ '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:AssumeRole","Resource":"arn:aws:iam::' + tenant.aws_account_id + ':role/' + tenant_name + '-deployer-' + role_suffix + '"}]}'
+  tags:
+    - key: platform.fedcore.io/cluster
+      value: #@ data.values.cluster_name
+    - key: platform.fedcore.io/tenant
+      value: #@ tenant_name
+    - key: platform.fedcore.io/auth-method
+      value: pod-identity
+
+---
+apiVersion: iam.services.k8s.aws/v1alpha1
+kind: Role
+metadata:
+  name: #@ tenant_name + "-deployer-tenant"
+  namespace: #@ cicd_ns
+  labels:
+    platform.fedcore.io/tenant: #@ tenant_name
+    platform.fedcore.io/resource-type: provisioned
+    platform.fedcore.io/role-tier: tenant
+    platform.fedcore.io/ack-target: #@ tenant_name
+spec:
+  name: #@ tenant_name + "-deployer-" + role_suffix
+  description: #@ "CI/CD role for " + tenant_name + " - Kubernetes operations only (no AWS permissions)"
+  maxSessionDuration: 3600
+  permissionsBoundary: #@ "arn:aws:iam::" + tenant.aws_account_id + ":policy/TenantMaxPermissions"
+  assumeRolePolicyDocument: #@ '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::' + str(data.values.aws.account_id) + ':role/' + data.values.cluster_name + '-' + tenant_name + '-deployer-' + role_suffix + '"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"fedcore-tenant-' + tenant_name + '"}}}]}'
+  policies:
+    - policyName: MinimalIdentityAccess
+      policyDocument: |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGetCallerIdentity",
+              "Effect": "Allow",
+              "Action": ["sts:GetCallerIdentity"],
+              "Resource": "*"
+            }
+          ]
+        }
+  tags:
+    - key: platform.fedcore.io/cluster
+      value: #@ data.values.cluster_name
+    - key: platform.fedcore.io/tenant
+      value: #@ tenant_name
+
+#! ═══════════════════════════════════════════════════════════════════════════
+#! EKS Access Entries for Tenant Owners
+#! ═══════════════════════════════════════════════════════════════════════════
+#@ if ack_eks_controller_enabled():
+#@   for owner in tenant.owners:
+#@     if owner.kind == "Group" and hasattr(owner, "iamRoleName") and owner.iamRoleName:
+---
+apiVersion: eks.services.k8s.aws/v1alpha1
+kind: AccessEntry
+metadata:
+  name: #@ tenant_name + "-" + owner.iamRoleName
+  namespace: ack-system
+  labels:
+    platform.fedcore.io/tenant: #@ tenant_name
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+    platform.fedcore.io/managed-by: flux
+spec:
+  clusterName: #@ data.values.cluster_name
+  principalARN: #@ "arn:aws:iam::" + tenant.aws_account_id + ":role/" + owner.iamRoleName
+  kubernetesGroups:
+    - #@ owner.name
+  type: STANDARD
+#@     end
+#@   end
+#@ end
+
+#@     end
+#@     if tenant_type == "namespace" and hasattr(tenant, "aws_account_id") and tenant.aws_account_id:
+
+#! ═══════════════════════════════════════════════════════════════════════════
+#! EKS Access Entries for Namespace-type role bindings
+#! ═══════════════════════════════════════════════════════════════════════════
+#@ if ack_eks_controller_enabled() and hasattr(tenant, "role_bindings") and tenant.role_bindings:
+#@   for binding in tenant.role_bindings:
+#@     if hasattr(binding, "createAccessEntry") and binding.createAccessEntry and binding.kind == "Group" and hasattr(binding, "iamRoleName") and binding.iamRoleName:
+---
+apiVersion: eks.services.k8s.aws/v1alpha1
+kind: AccessEntry
+metadata:
+  name: #@ tenant_name + "-" + binding.iamRoleName
+  namespace: ack-system
+  labels:
+    platform.fedcore.io/namespace: #@ tenant_name
+    platform.fedcore.io/cluster: #@ data.values.cluster_name
+    platform.fedcore.io/managed-by: flux
+spec:
+  clusterName: #@ data.values.cluster_name
+  principalARN: #@ "arn:aws:iam::" + tenant.aws_account_id + ":role/" + binding.iamRoleName
+  kubernetesGroups:
+    - #@ binding.name
+  type: STANDARD
+#@     end
+#@   end
+#@ end
+
+#@     end
+#@   end
+#@ end

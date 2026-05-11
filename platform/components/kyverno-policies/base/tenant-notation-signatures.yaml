@@ -1,0 +1,66 @@
+#@ load("@ytt:data", "data")
+
+#! Kyverno Policy: Verify Notation Signatures for Tenant Images
+#!
+#! Ensures tenant container images are signed using Notation (notation.io)
+#! with certificates from a configured trust policy before admission.
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-tenant-notation-signatures
+  annotations:
+    policies.kyverno.io/title: Verify Notation Signatures for Tenant Images
+    policies.kyverno.io/category: Security, Supply Chain
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Verify that tenant container images have valid Notation signatures
+      signed by trusted certificate authorities before allowing deployment.
+spec:
+  #@ if hasattr(data.values.tenant_policies, "require_notation_signatures") and data.values.tenant_policies.require_notation_signatures:
+  validationFailureAction: Enforce
+  #@ else:
+  validationFailureAction: Audit
+  #@ end
+  background: false
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: verify-notation-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: capsule.clastix.io/tenant
+                    operator: Exists
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - capsule-system
+                - kro-system
+                - flux-system
+                - ack-system
+                - aso-system
+      verifyImages:
+        - imageReferences:
+            #@ for registry in data.values.tenant_policies.allowed_registries:
+            - #@ registry + "*"
+            #@ end
+          type: Notary
+          attestors:
+            - count: 1
+              entries:
+                - certificates:
+                    cert: #@ data.values.tenant_policies.notation_trust_store_cert
+                    #@ if hasattr(data.values.tenant_policies, "notation_cert_chain"):
+                    certChain: #@ data.values.tenant_policies.notation_cert_chain
+                    #@ end
+          #@ if hasattr(data.values.tenant_policies, "notation_trust_policy"):
+          imageRegistryCredentials:
+            allowDefaultRegistry: true
+          #@ end
