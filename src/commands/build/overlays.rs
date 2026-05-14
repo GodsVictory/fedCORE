@@ -34,6 +34,17 @@ pub fn apply_prerender_overlays(
     overlay_dirs: &[String],
     data_values_path: &str,
 ) -> Result<()> {
+    apply_prerender_overlays_with(component_file, cluster_file, temp_dir, overlay_dirs, data_values_path, &[])
+}
+
+pub fn apply_prerender_overlays_with(
+    component_file: &str,
+    cluster_file: &str,
+    temp_dir: &Path,
+    overlay_dirs: &[String],
+    data_values_path: &str,
+    extra_ytt_args: &[&str],
+) -> Result<()> {
     let mut args = vec![
         "-f".to_string(),
         paths::CLUSTER_SCHEMA.to_string(),
@@ -46,6 +57,10 @@ pub fn apply_prerender_overlays(
         "--data-values-file".to_string(),
         data_values_path.to_string(),
     ];
+
+    for arg in extra_ytt_args {
+        args.push(arg.to_string());
+    }
 
     if !overlay_dirs.is_empty() {
         output::detail(&format!("{} pre-render overlay dir(s)", overlay_dirs.len()));

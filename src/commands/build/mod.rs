@@ -9,6 +9,8 @@ use anyhow::{Result, bail};
 pub(crate) use artifacts::build_single_artifact;
 pub use artifacts::build_artifacts;
 pub use push::push_artifacts;
+pub use overlays::{collect_overlay_dirs, apply_prerender_overlays_with};
+pub use rendering::render_helm_chart;
 
 pub fn validate_build(entry: &crate::types::BuildMatrixEntry) -> Result<bool> {
     match build_single_artifact(entry, false) {

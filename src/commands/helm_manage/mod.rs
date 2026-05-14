@@ -37,6 +37,10 @@ pub struct HelmManageArgs {
     #[arg(short, long)]
     pub mirror_images: bool,
 
+    /// Cluster directory for build-based image discovery (e.g., platform/clusters/mycluster)
+    #[arg(short, long)]
+    pub cluster: Option<String>,
+
     /// OCI registry URL
     #[arg(short, long)]
     pub registry: Option<String>,
@@ -106,7 +110,7 @@ pub fn execute(args: HelmManageArgs) -> Result<()> {
     }
 
     if args.mirror_images {
-        mirror_chart_images(&filtered_components, &args.dir, args.registry, args.registry_user, args.registry_pass)?;
+        mirror_chart_images(&filtered_components, &args.dir, args.registry, args.registry_user, args.registry_pass, args.cluster.as_deref())?;
     }
 
     output::done("Helm charts managed successfully");
